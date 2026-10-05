@@ -25,7 +25,9 @@ import smoother  # noqa: E402
 import blemish   # noqa: E402
 
 PAIRS = os.path.join(HERE, "data", "pairs")
-HELP_IMG = os.path.join(HERE, "..", "help", "image", "last017 copy.jpg")
+# A studio headshot from DM Portrait's help files next to the repo (not part
+# of it); the studio sheet is skipped if it isn't there.
+HELP_IMG = os.path.join(HERE, "..", "..", "help", "image", "last017 copy.jpg")
 
 
 def _label(img, text):

@@ -50,7 +50,9 @@ def _fit(img, w):
 
 def no_face():
     print("A. photos with no face")
-    for p in sorted(glob.glob(os.path.join(HERE, "..", "Image", "*.jpg"))):
+    # Any folder of photos without faces; here, DM Portrait's backdrop images
+    # next to the repo (not part of it).
+    for p in sorted(glob.glob(os.path.join(HERE, "..", "..", "Image", "*.jpg"))):
         img = _read(p)
         faces = smoother._detect_faces(img)
         out, n = blemish.remove_blemishes(img)

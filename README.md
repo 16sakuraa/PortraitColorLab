@@ -4,7 +4,7 @@ Portrait retouching for studio headshots: learned **blemish removal** and
 face-aware **skin smoothing**, as a desktop app and as a web app that runs
 entirely in the browser.
 
-**Web app:** https://16sakuraa.github.io/PortraitColorLab/ (once GitHub Pages is enabled)
+**Web app:** https://16sakuraa.github.io/PortraitColorLab/
 
 Photos are never uploaded: all processing happens on the visitor's own
 computer. The results keep the original's colour profile (e.g. Adobe RGB from
@@ -39,9 +39,15 @@ python web/tools/devserver.py
 then open http://127.0.0.1:8765/. (Opening `index.html` as a file does not
 work: browsers block the background worker and model files there.)
 
-## Licence notes
+## Licence
 
-The blemish model was trained on FFHQR/FFHQ and is licensed **CC BY-NC-SA 4.0
-(non-commercial)**. Do not use it for paid work; retrain on your own
-before/after photos for that (`retouch_model/README.md`). See
-`THIRD_PARTY_NOTICES.md` for all bundled components.
+The source code in this repository is released under the **MIT licence**
+(`LICENSE`). That does not cover:
+
+- the blemish model (`*/models/blemish_ffhqr.onnx`), trained on FFHQR/FFHQ and
+  licensed **CC BY-NC-SA 4.0 (non-commercial)**. Do not use it for paid work;
+  retrain on your own before/after photos for that (`retouch_model/README.md`);
+- the YuNet face model and the libraries bundled in `web/lib/`, which keep
+  their own licences.
+
+See `THIRD_PARTY_NOTICES.md` for details.
