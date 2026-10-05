@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Parity run</title>
+<pre id="log">running…</pre>
+<script type="module">
+import * as pipeline from '../js/pipeline.js';
+import { matFromImage, imageFromMat } from '../js/cv.js';
+import { decode } from '../js/photo_io.js';
+
+const log = (s) => { document.getElementById('log').textContent += '\n' + s; };
+const params = await (await fetch('../test/ref/params.json')).json();
+const names = ['p_user', 'p_02709', 'p_00044', 'p_00078', 'p_group', 'p_dslr'];
+const engineWanted = new URLSearchParams(location.search).get('engine');
+if (engineWanted === 'wasm') { Object.defineProperty(navigator, 'gpu', { value: undefined }); }
+const st = await pipeline.init(log);
+log('engine: ' + st.engine);
+const save = async (name, blob) => fetch('/__save/' + name, { method: 'POST', body: blob });
+const png = async (image) => { const c = new OffscreenCanvas(image.width, image.height); c.getContext('2d').putImageData(image, 0, 0); return c.convertToBlob({ type: 'image/png' }); };
+const results = {};
+for (const n of names) {
+  const { image } = await decode(await (await fetch('../test/' + n + '.png')).blob());
+  const bgr = matFromImage(st.cv, image);
+  const t0 = performance.now();
+  const a = await pipeline.analyze(bgr);
+  const t1 = performance.now();
+  const healedOnly = pipeline.render(bgr, a, { blemish: params.blemish, strength: 0, texture: params.texture });
+  const final = pipeline.render(bgr, a, params);
+  const t2 = performance.now();
+  const full = new Float32Array(bgr.rows * bgr.cols);
+  for (let y = 0; y < a.mask.h; y++) full.set(a.mask.data.subarray(y * a.mask.w, (y + 1) * a.mask.w), (y + a.mask.y0) * bgr.cols + a.mask.x0);
+  await save(n + '.mask.f32', new Blob([full]));
+  await save(n + '.healed.png', await png(imageFromMat(st.cv, healedOnly)));
+  await save(n + '.final.png', await png(imageFromMat(st.cv, final)));
+  results[n] = { faces: a.faces.length, healed: a.healed, analyzeMs: Math.round(t1 - t0), renderMs: Math.round(t2 - t1) };
+  log(`${n}: ${JSON.stringify(results[n])}`);
+  bgr.delete(); healedOnly.delete(); final.delete();
+}
+window.parityDone = results;
+log('done');
+</script>

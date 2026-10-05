@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skin Smoother</title>
+<meta name="description" content="Portrait retouching that runs entirely in your browser: blemish removal and skin smoothing. Photos never leave your computer.">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1a1a1a; --muted: #5f6672; --line: #0000001a;
+    --accent: #4b7bec; --accent-text: #ffffff; --secondary: #6b7280; --drop: #c7ccd4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16181c; --panel: #22252b; --text: #e8e8e8; --muted: #a2a8b3; --line: #ffffff1f;
+      --accent: #5b8af0; --secondary: #4b5563; --drop: #3a3f47;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--panel); padding: 14px 20px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header .tag { font-size: 12px; color: var(--muted); }
+  .controls { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+  .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
+  .ctl label { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  input[type=range] { width: 170px; accent-color: var(--accent); }
+  button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--accent);
+           color: var(--accent-text); cursor: pointer; }
+  button.secondary { background: var(--secondary); }
+  button:disabled { opacity: .45; cursor: default; }
+  main { padding: 18px; max-width: 1600px; margin: 0 auto; }
+  .drop { border: 2px dashed var(--drop); border-radius: 12px; padding: 48px 16px; text-align: center;
+          background: color-mix(in srgb, var(--panel) 60%, transparent); cursor: pointer; }
+  .drop.over { border-color: var(--accent); }
+  .drop p { margin: 6px 0; }
+  .note { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 10px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 6px 10px; }
+  .panel img { width: 100%; border-radius: 8px; display: block; }
+  .status { font-size: 13px; color: var(--muted); margin-top: 10px; min-height: 20px; }
+  .hidden { display: none !important; }
+  .busy::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; border-radius: 50%;
+                 border: 2px solid var(--muted); border-top-color: transparent; animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer { padding: 18px; text-align: center; font-size: 12px; color: var(--muted); }
+  footer a { color: inherit; }
+  @media (max-width: 760px) {
+    .grid { grid-template-columns: 1fr; }
+    .controls { margin-left: 0; width: 100%; }
+    .ctl { min-width: 0; flex: 1 1 140px; }
+    input[type=range] { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Skin Smoother</h1>
+    <div class="tag">Runs in your browser · photos never leave your computer</div>
+  </div>
+  <div class="controls">
+    <div class="ctl">
+      <label for="blemish">Remove blemishes <span id="bval">100</span></label>
+      <input id="blemish" type="range" min="0" max="100" value="100" disabled>
+    </div>
+    <div class="ctl">
+      <label for="strength">Strength <span id="sval">60</span></label>
+      <input id="strength" type="range" min="0" max="100" value="60" disabled>
+    </div>
+    <div class="ctl">
+      <label for="texture">Keep texture <span id="tval">35</span></label>
+      <input id="texture" type="range" min="0" max="100" value="35" disabled>
+    </div>
+    <button id="download" disabled>Download</button>
+    <button id="reset" class="secondary hidden">New photo</button>
+  </div>
+</header>
+
+<main>
+  <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a photo">
+    <p><strong>Click to choose a photo</strong> or drag it here</p>
+    <p class="note">JPG or PNG, any size. Colour profile and camera data are kept.</p>
+    <input id="file" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" class="hidden">
+  </div>
+
+  <div id="workspace" class="hidden">
+    <div class="grid">
+      <div class="panel"><h2>Original</h2><img id="before" alt="Original photo"></div>
+      <div class="panel"><h2>Retouched</h2><img id="after" alt="Retouched photo"></div>
+    </div>
+  </div>
+  <div class="status" id="status"></div>
+</main>
+
+<footer>
+  Blemish model trained on <a href="https://github.com/skylab-tech/ffhqr-dataset">FFHQR</a> (CC BY-NC-SA 4.0) —
+  for non-commercial use. Face detection: YuNet (OpenCV Zoo).
+</footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

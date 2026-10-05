@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Training data, checkpoints and run outputs (large; FFHQ/FFHQR images are
+# CC BY-NC-SA and not redistributed here)
+retouch_model/data/
+retouch_model/runs/
+
+# Desktop build outputs
+skin_smoother/build/
+skin_smoother/dist*/
+*.exe
+
+# Local test material (never commit photos of people)
+web/test/
+*.jpg
+*.jpeg
+*.png
+*.webp
+!web/assets/*.png
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
