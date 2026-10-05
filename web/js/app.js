@@ -1,7 +1,10 @@
 // Page logic: hands photos to the worker and shows its results.
 
+import { attachLoupe } from './loupe.js';
+
 const $ = (id) => document.getElementById(id);
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+const loupe = attachLoupe([$('before'), $('after')]);
 
 let ready = false, hasPhoto = false, engine = '';
 let photoName = 'photo';
@@ -14,9 +17,14 @@ function status(text, spinning = false) {
 }
 
 function show(which, blob) {
-  if (urls[which]) URL.revokeObjectURL(urls[which]);
+  const old = urls[which];
   urls[which] = URL.createObjectURL(blob);
   $(which).src = urls[which];
+  // Swap the magnifier over once the new picture is ready, then free the old one.
+  $(which).decode().catch(() => {}).finally(() => {
+    loupe.refresh();
+    if (old) URL.revokeObjectURL(old);
+  });
 }
 
 const params = () => ({
@@ -119,6 +127,7 @@ $('download').addEventListener('click', () => {
 
 $('reset').addEventListener('click', () => {
   hasPhoto = false;
+  loupe.hide();
   $('drop').classList.remove('hidden');
   $('workspace').classList.add('hidden');
   $('reset').classList.add('hidden');
