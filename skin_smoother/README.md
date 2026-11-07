@@ -83,7 +83,7 @@ To give this to someone who doesn't have Python, build a single `.exe`:
 
 1. Double-click **`build_exe.bat`** (or run `python -m PyInstaller ...` — the .bat
    does it for you).
-2. Send them the one file it produces: **`dist\SkinSmoother.exe`** (~101 MB).
+2. Send them the one file it produces: **`dist\SkinSmoother.exe`** (~104 MB).
 
 They just double-click it. It starts, waits a few seconds the first time, and
 opens the app in their browser. The models are bundled inside the .exe, so nothing
@@ -153,6 +153,12 @@ hair, face skin, body skin, clothes and accessories. It needs OpenCV 4.10 or new
 - **Not pixel-perfect:** Google says so too, so the edges are snapped to the photo.
   Google also reports lower accuracy on the darkest skin tones. Use **Edit mask** to
   correct anything it gets wrong.
+
+`models/face_landmarks.onnx` is Google's MediaPipe Face Mesh V2 landmark model,
+converted to ONNX (Apache 2.0, see `../THIRD_PARTY_NOTICES.md`). It outlines the eyes,
+brows and lips, which smoothing leaves alone. A face it doesn't clearly see, such as a
+strong profile, uses the older finder, as do all faces if the file is missing. Up to 30
+faces use it, largest first.
 
 ## Face detection (optional but recommended)
 

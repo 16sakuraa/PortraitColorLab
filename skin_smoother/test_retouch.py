@@ -17,6 +17,7 @@ import blemish  # noqa: E402
 import blemish_classic  # noqa: E402
 import mask_edit  # noqa: E402
 import skin_segment  # noqa: E402
+import face_landmarks  # noqa: E402
 
 FACE = np.array([[300, 200, 400, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9]], np.float32)
 
@@ -521,6 +522,177 @@ def test_model_scores_add_up_and_cover_the_region():
     assert seg.face.min() >= -1e-3 and (seg.face + seg.body).max() <= 1.001 and seg.person.max() <= 1.001
     probs = skin_segment._scores(skin_segment._get_net(), img)
     assert np.abs(probs.sum(axis=0) - 1).max() < 1e-4
+
+
+def outline_points() -> np.ndarray:
+    """Landmarks with each feature a circle of radius 30: eyes 200 px apart."""
+    pts = np.zeros((face_landmarks.POINTS, 2), np.float64)
+    for ids, (cx, cy) in ((face_landmarks.EYE_R, (300, 300)), (face_landmarks.EYE_L, (500, 300)),
+                          (face_landmarks.BROW_R, (300, 200)), (face_landmarks.BROW_L, (500, 200)),
+                          (face_landmarks.LIPS, (400, 600))):
+        for k, i in enumerate(ids):
+            t = 2 * np.pi * k / len(ids)
+            pts[i] = cx + 30 * np.cos(t), cy + 30 * np.sin(t)
+    # The corners that set the eyes' distance, kept inside their circles.
+    pts[list(face_landmarks.EYE_CORNERS_R)] = (270, 300), (330, 300)
+    pts[list(face_landmarks.EYE_CORNERS_L)] = (470, 300), (530, 300)
+    return pts
+
+
+def painted(zones, w, h) -> np.ndarray:
+    area = np.zeros((h, w), np.uint8)
+    for m, origin in zones:
+        smoother._paint(area, m, origin)
+    return area
+
+
+def test_outlines_cover_each_feature_and_stop_past_its_margin():
+    area = painted(face_landmarks.zones(outline_points(), 800, 800), 800, 800)
+    for x, y in ((300, 300), (500, 300), (300, 200), (500, 200), (400, 600)):
+        assert area[y, x] == 255
+    assert area[300, 300 + 30 + 3] == 255, "eyes reach 5% of their distance past the outline"
+    assert area[300, 300 + 30 + 8] == 0
+    assert area[600, 400 + 30 + 4] == 0, "lips reach 1% past theirs"
+    assert area[450, 400] == 0, "the skin between them stays skin"
+
+
+def test_outlines_at_the_photo_edge():
+    pts = outline_points()
+    area = painted(face_landmarks.zones(pts - (0, 590), 800, 800), 800, 800)    # lips near the top, eyes off it
+    assert area[10, 400] == 255
+    assert len(face_landmarks.zones(pts - (0, 2000), 800, 800)) == 0, "all of it off the photo"
+
+
+class FakeLandmarkNet:
+    def __init__(self):
+        self.x = None
+        self.points = np.zeros((1, 1, 1, face_landmarks.POINTS * 3), np.float32)
+
+    def setInput(self, x):
+        self.x = x
+
+    def getUnconnectedOutLayersNames(self):
+        return "points", "flag", "other"
+
+    def forward(self, _names):
+        return [self.points, np.full((1, 1), 5.0, np.float32), np.full((1, 1), 0.5, np.float32)]
+
+
+def test_landmark_crop_and_points_share_one_mapping():
+    img = np.zeros((800, 800, 3), np.uint8)
+    cv2.circle(img, (440, 400), 3, (0, 0, 255), -1)     # 40 px right of the crop's centre
+    net = FakeLandmarkNet()
+    net.points[0, 0, 0, :2] = 128 + 100, 128            # point 0: 100 model pixels right of centre
+
+    # Upright, one photo pixel per model pixel: the mark sits right of centre.
+    pts, flag = face_landmarks._run(net, img, 400.0, 400.0, 256.0, 0.0)
+    assert flag == 5.0, "the first single value"
+    assert net.x.shape == (1, 3, 256, 256)
+    assert net.x[0, 0, 128, 128 + 40] > 0.9 and net.x[0, 2, 128, 128 + 40] < 0.1, "red comes first"
+    assert np.allclose(pts[0], (500, 400), atol=1e-6)
+
+    # Turned 90 degrees: the crop's right is the photo's down, so the mark is above centre.
+    pts, _ = face_landmarks._run(net, img, 400.0, 400.0, 256.0, np.pi / 2)
+    assert net.x[0, 0, 128 - 40, 128] > 0.9
+    assert np.allclose(pts[0], (400, 500), atol=1e-6)
+
+    # A crop four times the model's size goes through the shrink.
+    pts, _ = face_landmarks._run(net, img, 400.0, 400.0, 1024.0, 0.0)
+    assert net.x[0, 0, 128, 128 + 10] > 0.3, "the mark, a quarter of the size"
+    assert np.allclose(pts[0], (800, 400), atol=1e-6)
+
+    assert face_landmarks._run(net, img, 5000.0, 400.0, 256.0, 0.0) is None, "misses the photo"
+
+
+def with_landmark_stubs(fit):
+    """landmarks() with this _fit and a net that's never touched."""
+    saved = face_landmarks._fit, face_landmarks._get_net
+    face_landmarks._fit, face_landmarks._get_net = fit, lambda: object()
+    return saved
+
+
+def test_a_weak_landmark_fit_uses_the_older_method():
+    faces = rows(face_row(100, 100, 200, 200), face_row(500, 100, 200, 200))
+    pts = outline_points()
+    saved = with_landmark_stubs(lambda _n, _b, f: (pts, 1.0 if f[0] < 300 else -1.0))
+    try:
+        found = face_landmarks.landmarks(np.zeros((800, 800, 3), np.uint8), faces)
+    finally:
+        face_landmarks._fit, face_landmarks._get_net = saved
+    assert found[0] is pts and found[1] is None
+
+
+def test_the_smallest_faces_past_the_limit_use_the_older_method():
+    n = face_landmarks.MAX_FACES + 2
+    faces = rows(*[face_row(10, 10, 50 + i, 50 + i) for i in range(n)])
+    pts = outline_points()
+    saved = with_landmark_stubs(lambda *_: (pts, 5.0))
+    try:
+        found = face_landmarks.landmarks(np.zeros((800, 800, 3), np.uint8), faces)
+    finally:
+        face_landmarks._fit, face_landmarks._get_net = saved
+    assert found[0] is None and found[1] is None and all(p is pts for p in found[2:])
+
+
+def test_a_landmark_model_that_fails_while_running_uses_the_older_method():
+    if not face_landmarks.have_model():
+        print("      (no landmark model here; skipped)")
+        return
+    img = skin_photo()
+    faces = rows(face_row(300, 200, 400, 500))
+    saved = face_landmarks._run
+
+    def fails(*_):
+        raise cv2.error("this OpenCV can't run the model")
+
+    try:
+        face_landmarks._run = fails
+        assert face_landmarks.landmarks(img, faces) == [None]
+        assert smoother.build_skin_mask(img, faces=faces)[500, 500] > 0.5, "not a crash, and not a hole"
+    finally:
+        face_landmarks._run = saved
+        face_landmarks._net_failed = False
+
+
+def test_the_mask_uses_outlines_and_only_falls_back_without_them():
+    img = skin_photo()
+    faces = rows(face_row(150, 100, 500, 600))
+    calls = []
+    saved = face_landmarks.landmarks, smoother.lip_mask, face_landmarks.get_model_path
+
+    def counted(*args):
+        calls.append(1)
+        return saved[1](*args)
+
+    try:
+        smoother.lip_mask = counted
+        face_landmarks.landmarks = lambda _b, _f: [outline_points()]
+        with_outlines = smoother.build_skin_mask(img, faces=faces)
+        assert not calls and with_outlines[600, 400] == 0, "the outline, not the finder"
+
+        face_landmarks.landmarks = lambda _b, _f: [None]
+        smoother.build_skin_mask(img, faces=faces)
+        assert len(calls) == 1, "a face without points uses the finder"
+
+        calls.clear()
+        face_landmarks.landmarks = saved[0]
+        face_landmarks.get_model_path = lambda: None
+        assert smoother.build_skin_mask(img, faces=faces)[150, 400] > 0.5, "no model file: still a mask"
+        assert len(calls) == 1
+    finally:
+        face_landmarks.landmarks, smoother.lip_mask, face_landmarks.get_model_path = saved
+
+
+def test_landmark_model_gives_one_answer_per_face():
+    if not face_landmarks.have_model():
+        print("      (no landmark model here; skipped)")
+        return
+    img = skin_photo()
+    faces = rows(face_row(300, 200, 400, 500))
+    found = face_landmarks.landmarks(img, faces)
+    assert len(found) == 1 and (found[0] is None or found[0].shape == (face_landmarks.POINTS, 2))
+    fit = face_landmarks._fit(face_landmarks._get_net(), img, faces[0])
+    assert np.isfinite(fit[0]).all() and np.isfinite(fit[1])
 
 
 def test_spots_are_only_looked_for_near_faces():

@@ -406,6 +406,7 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
     out if face_only. Faces it can't speak for, or every face if it's missing,
     use YuNet's face geometry; without a face the mask comes from skin tone.
     feather softens that older outline; the model's outline is already soft.
+    Eyes, brows and lips stay out, outlined by face_landmarks.py where it can.
     """
     h, w = bgr.shape[:2]
     if faces is None:
@@ -421,6 +422,8 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
         if seg is not None:
             model_area = skin_segment.skin_area(seg, faces, face_only)
             covered = seg.covered if model_area is not None else ()
+        import face_landmarks
+        points = face_landmarks.landmarks(bgr, faces)
 
         for i, f in enumerate(faces):
             x, y, fw, fh = f[:4]
@@ -437,10 +440,14 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
                             0, 0, 360, 255, -1)
             found = True
 
-            # Protect the eyes, brows and lips themselves (found from how
-            # they differ from skin), so the skin around them - under the
-            # eyes, above the brows, between nose and lip - still gets
-            # smoothed.
+            # Protect the eyes, brows and lips themselves, so the skin around
+            # them - under the eyes, above the brows, between nose and lip -
+            # still gets smoothed. The landmark model outlines them; where it
+            # can't, they're found from how they differ from skin.
+            if points[i] is not None:
+                for m, origin in face_landmarks.zones(points[i], w, h):
+                    _paint(protect, m, origin)
+                continue
             angle = float(np.degrees(np.arctan2(ley - rey, lex - rex)))
             for (ex, ey) in ((rex, rey), (lex, ley)):
                 m, origin, _ = eye_mask(bgr, ex, ey, eye_d, angle)

@@ -8,6 +8,7 @@ a = Analysis(
     datas=[('models/face_detection_yunet.onnx', 'models'),
            ('models/blemish_ffhqr.onnx', 'models'),
            ('models/selfie_multiclass_256x256.onnx', 'models'),
+           ('models/face_landmarks.onnx', 'models'),
            ('../web/js/mask_brush.js', 'web')],
     hiddenimports=[],
     hookspath=[],

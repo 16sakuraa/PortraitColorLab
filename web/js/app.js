@@ -166,7 +166,7 @@ $('reset').addEventListener('click', () => {
   status(`Ready · running on the ${engine}.`);
 });
 
-status('Loading (about 55 MB the first time, then cached)…', true);
+status('Loading (about 60 MB the first time, then cached)…', true);
 // ?blemish=network uses the blemish network instead (non-commercial licence).
 const blemishEngine = new URLSearchParams(location.search).get('blemish') === 'network' ? 'network' : 'classic';
 worker.postMessage({ type: 'init', blemishEngine });

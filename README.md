@@ -36,13 +36,13 @@ a DSLR), camera data and print resolution.
 ## Web app vs desktop app
 
 Both run the same algorithm. `web/tools/parity.py` compares them stage by stage
-on a test set; on the last run the skin masks were identical and every final
-image matched the desktop at 97 dB PSNR or better, on both WebGPU and the CPU
-fallback. Saved JPEGs use the original's quality settings and colour sampling, so
+on a test set; on the last run the skin masks differed by 0.00003 or less on
+average and every final image matched the desktop at 80 dB PSNR or better, on both
+WebGPU and the CPU fallback. Saved JPEGs use the original's quality settings and colour sampling, so
 file size and quality stay close to the original.
 
 Typical speed on a 20-megapixel photo: about 3 s to analyse and 4 s to save. The
-first visit downloads about 55 MB, which is then cached.
+first visit downloads about 60 MB, which is then cached.
 
 ## Running the web app locally
 
@@ -63,7 +63,8 @@ The source code in this repository is released under the **MIT licence**
   removal doesn't use it. It only runs if you ask for it (`?blemish=network` on the
   web, `BLEMISH_ENGINE=network` on the desktop). Do not use it for paid work; retrain
   on your own before/after photos for that (`retouch_model/README.md`);
-- the YuNet face model, Google's selfie segmentation model (Apache 2.0, converted
-  to ONNX) and the libraries bundled in `web/lib/`, which keep their own licences.
+- the YuNet face model, Google's selfie segmentation and face landmark models (Apache
+  2.0, converted to ONNX) and the libraries bundled in `web/lib/`, which keep their own
+  licences.
 
 See `THIRD_PARTY_NOTICES.md` for details.

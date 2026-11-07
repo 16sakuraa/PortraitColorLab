@@ -314,8 +314,10 @@ export function browMask(cv, bgr, ex, ey, eyeD, angle) {
 
 // modelArea: the skin the segmentation model found (skinArea in skin_segment.js), or
 // null. covered: the faces it can speak for. The other faces use their face geometry.
+// outlines: per face, its eyes, brows and lips from zones() in face_landmarks.js, which
+// this deletes, or null where they should be found from how they differ from skin.
 // Returns { x0, y0, w, h, data: Float32Array } (values 0..1; zero outside).
-export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = []) {
+export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = [], outlines = []) {
   const H = bgr.rows, W = bgr.cols;
   const diag = Math.hypot(H, W);
   const k = Math.max(3, Math.trunc(diag * 0.01 * Math.max(feather, 0.01))) | 1;
@@ -343,12 +345,13 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
   let area = cv.Mat.zeros(RH, RW, cv.CV_8U);
   const protect = cv.Mat.zeros(RH, RW, cv.CV_8U);
   const paint = ({ mask, x0, y0 }) => {
+    const from = mask.data, to = protect.data, cols = mask.cols;
     for (let y = 0; y < mask.rows; y++) {
       const ry = y + y0 - Y0;
       if (ry < 0 || ry >= RH) continue;
-      for (let x = 0; x < mask.cols; x++) {
+      for (let x = 0; x < cols; x++) {
         const rx = x + x0 - X0;
-        if (rx >= 0 && rx < RW && mask.data[y * mask.cols + x]) protect.data[ry * RW + rx] = 255;
+        if (rx >= 0 && rx < RW && from[y * cols + x]) to[ry * RW + rx] = 255;
       }
     }
     mask.delete();
@@ -359,6 +362,10 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
     if (!trusted.has(i)) {
       cv.ellipse(area, new cv.Point(Math.trunc(f[0] + f[2] / 2 - X0), Math.trunc(f[1] + f[3] * 0.55 - Y0)),
         new cv.Size(Math.trunc(f[2] * 0.52), Math.trunc(f[3] * 0.72)), 0, 0, 360, new cv.Scalar(255), -1);
+    }
+    if (outlines[i]) {
+      outlines[i].forEach(paint);
+      return;
     }
     const angle = Math.atan2(f[7] - f[5], f[6] - f[4]) * 180 / Math.PI;
     for (const [ex, ey] of [[f[4], f[5]], [f[6], f[7]]]) {
