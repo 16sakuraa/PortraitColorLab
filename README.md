@@ -30,7 +30,7 @@ a DSLR), camera data and print resolution.
 | Folder | What |
 |---|---|
 | `web/` | Browser version (static site, deployed by `.github/workflows/pages.yml`). Runs the same steps as the desktop app with OpenCV.js and ONNX Runtime Web; uses the graphics chip (WebGPU) when available, otherwise the CPU. |
-| `skin_smoother/` | Desktop app (Python): web UI (`run.bat` / `serve.py`), Tk app (`app.py`), command line (`smoother.py`), standalone `.exe` build (`build_exe.bat`). |
+| `skin_smoother/` | Desktop app (Python): web UI (`run.bat` / `serve.py`), Tk app (`app.py`), command line (`smoother.py`), standalone `.exe` build (`build_exe.bat`). The `.exe` is published on the [Releases page](https://github.com/16sakuraa/PortraitColorLab/releases/latest) by `.github/workflows/exe-release.yml` and updates itself. |
 | `retouch_model/` | Training code for the optional blemish network (PyTorch, RTX GPU). Training data is not included. |
 
 ## Web app vs desktop app

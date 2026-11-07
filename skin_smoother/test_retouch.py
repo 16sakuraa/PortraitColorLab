@@ -5,8 +5,15 @@ Checks on the retouching code that need no photos or models.
 """
 
 from __future__ import annotations
+import contextlib
+import hashlib
+import io
+import json
 import os
+import shutil
 import sys
+import tempfile
+import urllib.error
 
 import numpy as np
 import cv2
@@ -18,8 +25,9 @@ import blemish_classic  # noqa: E402
 import mask_edit  # noqa: E402
 import skin_segment  # noqa: E402
 import face_landmarks  # noqa: E402
+import updater  # noqa: E402
 
-FACE = np.array([[300, 200, 400, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9]], np.float32)
+FACE =np.array([[300, 200, 400, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9]], np.float32)
 
 
 def skin_photo(h: int = 900, w: int = 1000, seed: int = 1) -> np.ndarray:
@@ -800,6 +808,201 @@ def test_engine_switch_reaches_the_classic_detector():
         assert corr is not None and "spot" in blemish.count_text(count)
     finally:
         blemish.ENGINE = saved
+
+
+# ---------- the .exe's updater ----------
+
+TEST_LATEST = updater.TEST_PREFIX + "9/latest"
+NEW_PROGRAM = b"MZ" + bytes(range(256)) * 40
+
+
+class FakeWeb:
+    """Stands in for updater._request: URL -> bytes, an exception to raise, or missing."""
+
+    def __init__(self, pages):
+        self.pages, self.asked = pages, []
+
+    def __call__(self, url):
+        self.asked.append(url)
+        page = self.pages.get(url)
+        if page is None:
+            raise urllib.error.URLError("no connection")
+        if isinstance(page, BaseException):
+            raise page
+        return io.BytesIO(page)
+
+
+def fake_release(program: bytes, tag: str = "v99.0.0", base: str | None = None, digest: bool = True,
+                 checksum: str | None = None, size: int | None = None) -> dict:
+    """The pages of a release in GitHub's format, served from TEST_LATEST."""
+    base = base or updater.TEST_PREFIX + "9/download/"
+    real = hashlib.sha256(program).hexdigest()
+    exe = {"name": "SkinSmoother.exe", "size": len(program) if size is None else size,
+           "browser_download_url": base + "SkinSmoother.exe"}
+    if digest:
+        exe["digest"] = "sha256:" + real
+    sums = {"name": "SkinSmoother.exe.sha256", "size": 84, "browser_download_url": base + "SkinSmoother.exe.sha256"}
+    release = {"tag_name": tag, "prerelease": False, "draft": False, "assets": [exe, sums]}
+    return {TEST_LATEST: json.dumps(release).encode(), exe["browser_download_url"]: program,
+            sums["browser_download_url"]: f"{checksum or real}  SkinSmoother.exe\n".encode()}
+
+
+@contextlib.contextmanager
+def program_folder(pages: dict):
+    """A folder holding a 'running' SkinSmoother.exe, with the web replaced by pages."""
+    folder = tempfile.mkdtemp()
+    exe = os.path.join(folder, "SkinSmoother.exe")
+    with open(exe, "wb") as fh:
+        fh.write(b"MZ the program that is running")
+    saved = updater._request
+    updater._request = FakeWeb(pages)
+    try:
+        yield exe, updater._request
+    finally:
+        updater._request = saved
+        updater._set(state="off", latest=None, message="")
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def unchanged(exe: str) -> bool:
+    return (read_bytes(exe).startswith(b"MZ the program") and not os.path.exists(exe + ".download")
+            and not os.path.exists(exe + ".old"))
+
+
+def test_versions_compare_and_odd_tags_are_ignored():
+    p = updater.parse_version
+    assert p("v1.2.10") == (1, 2, 10) and p("1.2.3") == (1, 2, 3)
+    assert p("v1.2") is None and p("v1.2.3-rc1") is None and p(None) is None and p("latest") is None
+    assert p("v1.10.0") > p("v1.9.9")
+    assert p(updater.VERSION) is not None, "version.py holds a plain x.y.z"
+
+
+def test_a_newer_release_replaces_the_program_and_keeps_the_running_copy():
+    with program_folder(fake_release(NEW_PROGRAM)) as (exe, _):
+        s = updater.run(exe, TEST_LATEST)
+        assert s["state"] == "ready" and s["latest"] == "99.0.0" and "open the program again" in s["message"], s
+        assert read_bytes(exe) == NEW_PROGRAM and read_bytes(exe + ".old").startswith(b"MZ the program")
+        assert not os.path.exists(exe + ".download")
+        updater.cleanup(exe)        # the next start
+        assert not os.path.exists(exe + ".old") and read_bytes(exe) == NEW_PROGRAM
+
+
+def test_the_same_or_an_older_release_is_left_alone():
+    for tag in ("v" + updater.VERSION, "v0.0.1", "v1.0", "nightly"):
+        with program_folder(fake_release(NEW_PROGRAM, tag=tag)) as (exe, web):
+            assert updater.run(exe, TEST_LATEST)["state"] == "current", tag
+            assert web.asked == [TEST_LATEST] and unchanged(exe), tag
+
+
+def test_a_pre_release_is_left_alone():
+    pages = fake_release(NEW_PROGRAM)
+    release = json.loads(pages[TEST_LATEST])
+    release["prerelease"] = True
+    pages[TEST_LATEST] = json.dumps(release).encode()
+    with program_folder(pages) as (exe, _):
+        assert updater.run(exe, TEST_LATEST)["state"] == "current" and unchanged(exe)
+
+
+def test_no_release_or_no_connection_says_nothing():
+    gone = urllib.error.HTTPError(TEST_LATEST, 404, "Not Found", None, None)
+    limited = urllib.error.HTTPError(TEST_LATEST, 403, "rate limited", None, None)
+    for page, state in ((gone, "current"), (limited, "offline"), (None, "offline"), (b"<html>busy</html>", "offline")):
+        with program_folder({TEST_LATEST: page}) as (exe, _):
+            s = updater.run(exe, TEST_LATEST)
+            assert s["state"] == state and s["message"] == "" and unchanged(exe), (state, s)
+
+
+def test_a_damaged_download_leaves_the_program_alone():
+    cases = {
+        "doesn't match its checksum": fake_release(NEW_PROGRAM, checksum="0" * 64, digest=False),
+        "checksums don't agree": fake_release(NEW_PROGRAM, checksum="0" * 64),
+        "stopped part-way": fake_release(NEW_PROGRAM, size=len(NEW_PROGRAM) + 10),
+        "larger than expected": fake_release(NEW_PROGRAM, size=len(NEW_PROGRAM) - 10),
+        "isn't a Windows program": fake_release(b"<html>" + NEW_PROGRAM),
+    }
+    for words, pages in cases.items():
+        with program_folder(pages) as (exe, _):
+            s = updater.run(exe, TEST_LATEST)
+            assert s["state"] == "failed" and words in s["message"] and "try again" in s["message"], (words, s)
+            assert unchanged(exe), words
+
+
+def test_downloads_only_come_from_the_project_page():
+    for base in ("https://example.com/", updater.TEST_PREFIX + "9/download/"):
+        pages = fake_release(NEW_PROGRAM, base=base)
+        pages[updater.LATEST_URL] = pages.pop(TEST_LATEST)       # GitHub's real address
+        with program_folder(pages) as (exe, web):
+            s = updater.run(exe)
+            assert s["state"] == "failed" and "project's GitHub page" in s["message"], (base, s)
+            assert web.asked == [updater.LATEST_URL] and unchanged(exe), "nothing else was fetched"
+
+
+def test_a_busy_file_is_retried_and_a_failed_swap_puts_the_program_back():
+    real_replace, real_remove, real_wait = os.replace, os.remove, updater.RETRY_FOR
+    calls = []
+
+    def busy_once(a, b):
+        calls.append(a)
+        if len(calls) == 1:
+            raise PermissionError("being scanned")
+        return real_replace(a, b)
+
+    def refuse_new(a, b):
+        if a.endswith(".download"):
+            raise OSError("disk trouble")
+        return real_replace(a, b)
+
+    def old_copy_open(path):
+        if path.endswith(".old"):
+            raise PermissionError("in use")
+        return real_remove(path)
+
+    try:
+        updater.RETRY_FOR = 0.3
+        with program_folder(fake_release(NEW_PROGRAM)) as (exe, _):
+            os.replace = busy_once
+            assert updater.run(exe, TEST_LATEST)["state"] == "ready" and read_bytes(exe) == NEW_PROGRAM
+        with program_folder(fake_release(NEW_PROGRAM)) as (exe, _):
+            os.replace = refuse_new
+            assert updater.run(exe, TEST_LATEST)["state"] == "failed" and unchanged(exe)
+        os.replace = real_replace
+        with program_folder(fake_release(NEW_PROGRAM)) as (exe, _):
+            with open(exe + ".old", "wb") as fh:
+                fh.write(b"MZ an older copy, still open")
+            os.remove = old_copy_open
+            s = updater.run(exe, TEST_LATEST)
+            os.remove = real_remove
+            assert s["state"] == "failed" and "still open" in s["message"], s
+            assert read_bytes(exe).startswith(b"MZ the program") and not os.path.exists(exe + ".download")
+    finally:
+        os.replace, os.remove, updater.RETRY_FOR = real_replace, real_remove, real_wait
+
+
+def test_the_updater_is_off_from_source_and_when_switched_off():
+    updater._set(state="off")
+    updater.start()
+    assert updater.status()["state"] == "off", "running from source"
+    had_frozen, frozen = hasattr(sys, "frozen"), getattr(sys, "frozen", None)
+    had_switch = os.environ.get("SKINSMOOTHER_NO_UPDATE")
+    try:
+        sys.frozen = True
+        os.environ["SKINSMOOTHER_NO_UPDATE"] = "1"
+        updater.start()
+        assert updater.status()["state"] == "off", "switched off"
+    finally:
+        if had_frozen:
+            sys.frozen = frozen
+        else:
+            del sys.frozen
+        if had_switch is None:
+            os.environ.pop("SKINSMOOTHER_NO_UPDATE", None)
+        else:
+            os.environ["SKINSMOOTHER_NO_UPDATE"] = had_switch
 
 
 if __name__ == "__main__":

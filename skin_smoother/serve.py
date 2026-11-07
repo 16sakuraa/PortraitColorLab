@@ -26,6 +26,8 @@ import smoother
 import blemish
 import mask_edit
 import photo_io
+import updater
+from version import VERSION
 
 MASK_IMAGE_MAX = 1600     # longest side of the mask picture sent to the page for the brush
 
@@ -112,6 +114,9 @@ PAGE ="""<!doctype html>
               opacity: .6; margin: 4px 6px 10px; }
   .panel img { width: 100%; border-radius: 8px; display: block; }
   .status { font-size: 13px; opacity: .8; margin-top: 10px; min-height: 18px; }
+  .version { font-size: 12px; opacity: .55; }
+  .update { padding: 9px 20px; background: #fff4cc; color: #4d3b00; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { .update { background: #3d3415; color: #f3e3a6; } }
   .hidden { display: none; }
   @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 </style>
@@ -119,6 +124,7 @@ PAGE ="""<!doctype html>
 <body>
 <header>
   <h1>Skin Smoother</h1>
+  <span class="version" id="version">version __VERSION__</span>
   <div class="controls">
     <div class="ctl">
       <label>Remove blemishes <span id="bval">100</span></label>
@@ -142,6 +148,7 @@ PAGE ="""<!doctype html>
     <button id="reset" class="secondary hidden">New image</button>
   </div>
 </header>
+<div id="update" class="update hidden"></div>
 
 <main>
   <div id="drop" class="drop">
@@ -176,6 +183,18 @@ const brush = attachMaskBrush({
 const modelNote = () => {};
 
 function setStatus(t){ $('status').textContent = t; }
+
+// The program checks for a newer version when it starts (updater.py); show what it finds.
+async function watchUpdate(){
+  try {
+    const u = await (await fetch('/update')).json();
+    $('version').textContent = 'version ' + u.version;
+    $('update').textContent = u.message || '';
+    $('update').classList.toggle('hidden', !u.message);
+    if (u.state === 'checking' || u.state === 'downloading') setTimeout(watchUpdate, 3000);
+  } catch(err) { /* the program has been closed */ }
+}
+watchUpdate();
 
 $('drop').addEventListener('click', () => $('file').click());
 $('drop').addEventListener('dragover', e => { e.preventDefault(); $('drop').style.opacity=.7; });
@@ -301,9 +320,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(200, PAGE.replace("__VERSION__", VERSION).encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/mask_brush.js":
             self._send(200, _brush_script(), "text/javascript; charset=utf-8")
+        elif self.path == "/update":
+            self._send(200, json.dumps(updater.status()).encode("utf-8"), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -374,12 +395,13 @@ def main():
     url = f"http://127.0.0.1:{port}/"
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print("=" * 48)
-    print("  Skin Smoother is running.")
+    print(f"  Skin Smoother {VERSION} is running.")
     print(f"  Open:  {url}")
     print("  Close this window to stop.")
     if not smoother.have_face_model():
         print("  (Tip: run get_model.py for face-aware masking.)")
-    print("=" * 48)
+    print("=" * 48, flush=True)
+    updater.start()
     if not os.environ.get("SKINSMOOTHER_NO_BROWSER"):
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

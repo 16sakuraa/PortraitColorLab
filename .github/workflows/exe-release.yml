@@ -1,0 +1,82 @@
+name: Build and release the desktop app
+
+# Push a tag like v1.2.3 to build SkinSmoother.exe and publish it as a release. Copies
+# of the program with the updater (skin_smoother/updater.py) then update themselves.
+# A tag with a suffix, like v1.2.3-rc1, makes a pre-release, which no copy picks up.
+# Run it by hand (Actions tab) to build and test without publishing.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: exe-release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install the pinned packages
+        run: python -m pip install -r skin_smoother/requirements-exe.txt
+
+      - name: Check the tag matches version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="$(python -c "import sys; sys.path.insert(0, 'skin_smoother'); import version; print(version.VERSION)")"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "${tag%%-*}" != "$want" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match version.py ($want). Bump version.py first."
+            exit 1
+          fi
+
+      - name: Unit checks
+        run: python skin_smoother/test_retouch.py
+
+      - name: Build SkinSmoother.exe
+        working-directory: skin_smoother
+        run: python -m PyInstaller --noconfirm SkinSmoother.spec
+
+      - name: Try the built program
+        run: |
+          want="$(python -c "import sys; sys.path.insert(0, 'skin_smoother'); import version; print(version.VERSION)")"
+          python skin_smoother/exe_smoke.py skin_smoother/dist/SkinSmoother.exe "$want"
+
+      - name: Write its checksum
+        working-directory: skin_smoother/dist
+        run: |
+          python -c "import hashlib; h = hashlib.sha256(open('SkinSmoother.exe', 'rb').read()).hexdigest(); open('SkinSmoother.exe.sha256', 'w', newline='\n').write(h + '  SkinSmoother.exe\n'); print(h)"
+          ls -l
+
+      - name: Keep the build (runs by hand)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkinSmoother
+          path: |
+            skin_smoother/dist/SkinSmoother.exe
+            skin_smoother/dist/SkinSmoother.exe.sha256
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          kind=""
+          case "$GITHUB_REF_NAME" in *-*) kind="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            skin_smoother/dist/SkinSmoother.exe skin_smoother/dist/SkinSmoother.exe.sha256 \
+            --title "Skin Smoother $GITHUB_REF_NAME" $kind \
+            --notes "Download **SkinSmoother.exe** below and double-click it. Keep it in a normal folder such as Desktop or Documents. Copies from version 1.0.0 on check for updates when they start and update themselves. The .sha256 file holds the program's SHA-256 checksum."

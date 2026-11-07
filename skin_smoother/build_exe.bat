@@ -15,7 +15,7 @@ if not defined PYEXE (
 )
 
 echo Installing build tools and dependencies...
-%PYEXE% -m pip install --quiet pyinstaller -r requirements.txt
+%PYEXE% -m pip install --quiet -r requirements-exe.txt
 
 echo Building SkinSmoother.exe (this takes a minute or two)...
 %PYEXE% -m PyInstaller --noconfirm SkinSmoother.spec

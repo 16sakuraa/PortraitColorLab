@@ -79,21 +79,51 @@ The brush for editing the mask isn't in this app: use the web UI for that.
 
 ## Share as a standalone app (no Python needed)
 
-To give this to someone who doesn't have Python, build a single `.exe`:
-
-1. Double-click **`build_exe.bat`** (or run `python -m PyInstaller ...` — the .bat
-   does it for you).
-2. Send them the one file it produces: **`dist\SkinSmoother.exe`** (~104 MB).
-
-They just double-click it. It starts, waits a few seconds the first time, and
-opens the app in their browser. The models are bundled inside the .exe, so nothing
-else is required.
+Download **`SkinSmoother.exe`** (about 104 MB) from the
+[latest release](https://github.com/16sakuraa/PortraitColorLab/releases/latest)
+and give that one file to anyone. They just double-click it. It starts, waits a few
+seconds the first time, and opens the app in their browser. The models are bundled
+inside the .exe, so nothing else is required.
 
 Notes:
+- Keep it in an ordinary folder such as Desktop or Documents, not Program Files,
+  so it can update itself.
 - On first run Windows may show a blue "Windows protected your PC" box because
   the file isn't code-signed. Click **More info -> Run anyway**. This is normal
   for unsigned apps.
 - A console window stays open showing the address; closing it stops the app.
+
+### Updates
+
+From version 1.0.0, the .exe checks for a newer release each time it starts
+(`updater.py`). If there is one, it downloads it in the background, checks its
+size and SHA-256 checksum, and puts it in place of the old file. The page and the
+console then say to close the console window and open the program again. Offline,
+it just starts as usual.
+
+- It only asks GitHub for the release list: no photos or personal details are sent.
+- The checksums catch a damaged download. They're published in the same place as
+  the .exe, so they can't protect against someone taking over the GitHub account;
+  keep two-factor sign-in on for it.
+- Copies from before version 1.0.0 have no updater: replace those by hand once.
+- Set `SKINSMOOTHER_NO_UPDATE=1` to turn updates off.
+
+### Releasing a new version
+
+1. Bump `VERSION` in `version.py` and commit.
+2. Tag that commit and push both:
+   `git tag v1.0.1` then `git push origin main v1.0.1`.
+
+GitHub Actions (`.github/workflows/exe-release.yml`) then runs the unit checks,
+builds the .exe from the exact packages in `requirements-exe.txt`, tries the
+built program (`exe_smoke.py`), and publishes it with its checksum file. Every copy
+picks it up on its next start. A tag with a suffix, such as `v1.0.1-rc1`, makes a
+pre-release that no copy picks up, for trying the build first.
+
+### Building it yourself
+
+Double-click **`build_exe.bat`**. It installs the pinned packages and writes
+**`dist\SkinSmoother.exe`**. Check no Skin Smoother is running first.
 
 ## Command line (batch)
 
