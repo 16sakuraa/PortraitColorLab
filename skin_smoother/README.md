@@ -83,7 +83,7 @@ To give this to someone who doesn't have Python, build a single `.exe`:
 
 1. Double-click **`build_exe.bat`** (or run `python -m PyInstaller ...` — the .bat
    does it for you).
-2. Send them the one file it produces: **`dist\SkinSmoother.exe`** (~74 MB).
+2. Send them the one file it produces: **`dist\SkinSmoother.exe`** (~101 MB).
 
 They just double-click it. It starts, waits a few seconds the first time, and
 opens the app in their browser. The models are bundled inside the .exe, so nothing
