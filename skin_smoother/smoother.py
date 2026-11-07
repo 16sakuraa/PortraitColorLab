@@ -1,20 +1,25 @@
 """
 Face-aware skin smoothing.
 
-Pipeline (the DM Portrait-style method):
-  1. Detect the face and build a feathered skin mask (face oval minus eyes,
-     eyebrows, mouth), intersected with a skin-tone mask so hair/background
-     are left alone.
-  2. Edge-preserving smoothing (bilateral) flattens blotches while keeping
-     real edges (nose, jawline) crisp.
-  3. Add back a fraction of the original fine texture so skin keeps pores and
-     does not look like plastic.
-  4. Composite the smoothed skin back through the soft mask.
+Pipeline:
+  1. Detect the faces and build a soft skin mask: a segmentation model finds face
+     and body skin (skin_segment.py), minus the eyes, eyebrows and lips, which are
+     found from how they differ from the skin. The mask can be edited by hand with
+     a brush (mask_edit.py).
+  2. Split the skin into a tone layer and a detail layer, using sizes relative
+     to the face, so results don't depend on how the photo was cropped.
+  3. Smooth the tone layer with guided filters (brightness over a small radius,
+     colour over a wider one), reading only from skin so a coloured backdrop can't
+     tint it, and keeping the face's large-scale shading.
+  4. Treat the detail layer by how strong it is at each pixel: reduce pores
+     gently, fine lines more, and leave real edges, lashes and stray hairs alone.
+     Optionally add synthetic pores.
+  5. Composite through the soft mask.
 
-Face detection uses OpenCV's YuNet model when the model file is present next to
-this script (models/face_detection_yunet.onnx). Without it, the tool falls back
-to a skin-tone mask so it still works. Nothing from DM Portrait is used -- this
-is standard image processing (OpenCV).
+Each model file is looked for next to this script (models/). Without the
+segmentation model, the mask falls back to a face oval from OpenCV's YuNet face
+detector; without that too, to a skin-tone mask, so it still works. The smoothing
+is standard image processing (OpenCV) built from published methods.
 """
 
 from __future__ import annotations
@@ -56,39 +61,63 @@ def have_face_model() -> bool:
     return get_model_path() is not None
 
 
-# ---------- Optional GPU (OpenCL) acceleration ----------
-# The heavy smoothing filters can run on the GPU through OpenCV's "Transparent
-# API" (UMat). It is optional and always falls back to the CPU if OpenCL is
-# unavailable or a kernel is missing, so results are identical either way.
-_USE_OPENCL = False
-
-
-def opencl_available() -> bool:
-    try:
-        return bool(cv2.ocl.haveOpenCL())
-    except Exception:
-        return False
-
-
-def set_opencl(enabled: bool) -> bool:
-    """Turn the OpenCL path on/off. Returns the state actually in effect
-    (False if OpenCL isn't available on this machine)."""
-    global _USE_OPENCL
-    want = bool(enabled) and opencl_available()
-    try:
-        cv2.ocl.setUseOpenCL(want)
-        want = bool(cv2.ocl.useOpenCL())
-    except Exception:
-        want = False
-    _USE_OPENCL = want
-    return want
-
-
-def using_opencl() -> bool:
-    return _USE_OPENCL
-
-
 DETECT_MAX = 1280  # longest side YuNet sees; large faces are missed above this
+SAME_FACE_OVERLAP = 0.3  # share of a smaller face's box inside a larger one's that makes them one face
+
+
+def _plausible(face_row) -> bool:
+    """Does the landmark layout look like a face?
+
+    Ears, hair, dark corners and blurry background get detected as faces now
+    and then. The score can't separate them (real large faces often score only
+    0.6-0.75), but the layout can. Measured on 294 real FFHQ faces (1st-99th
+    percentile):
+      eye spacing / box width    0.41-0.56
+      eyes-to-mouth / eye spacing 0.75-1.38
+      eye line vs eyes-to-mouth  ~perpendicular (|cos| <= 0.04)
+      nose position eyes->mouth  0.52-0.79
+    The limits below leave room for turned and tilted heads (common in group
+    photos).
+    """
+    e1, e2, nose, m1, m2 = (np.array(face_row[4 + 2 * k:6 + 2 * k], float) for k in range(5))
+    eye_avg, mouth_avg = (e1 + e2) / 2, (m1 + m2) / 2
+    ee, em = e2 - e1, mouth_avg - eye_avg
+    eye_d, em_d = float(np.hypot(*ee)), float(np.hypot(*em))
+    if eye_d < 0.28 * float(face_row[2]) or em_d < 1e-6:
+        return False
+    cos = abs(float(ee @ em)) / (eye_d * em_d)
+    t_nose = float((nose - eye_avg) @ em) / em_d ** 2
+    return 0.6 <= em_d / eye_d <= 2.2 and cos <= 0.12 and 0.35 <= t_nose <= 1.0
+
+
+def _separate_faces(faces):
+    """Only one row per real face, in the same order.
+
+    YuNet finds some large faces twice, at different scales, and its boxes can
+    overlap too little for its own duplicate check. The extra row's landmarks are
+    off, and would protect a patch of cheek as if it were an eye. A row whose
+    landmarks sit inside a larger face's box, or whose box is largely inside it,
+    is that face again. Largest first, so the better fit wins; a row that doesn't
+    look like a face goes too, unless it's all there is. Neighbours in a group
+    photo overlap far less, so they stay.
+    """
+    if faces is None or len(faces) < 2:
+        return faces
+
+    def same_face(f, g) -> bool:
+        cx, cy = float(np.mean(f[4:14:2])), float(np.mean(f[5:14:2]))
+        if g[0] <= cx <= g[0] + g[2] and g[1] <= cy <= g[1] + g[3]:
+            return True
+        across = min(f[0] + f[2], g[0] + g[2]) - max(f[0], g[0])
+        down = min(f[1] + f[3], g[1] + g[3]) - max(f[1], g[1])
+        return across > 0 and down > 0 and across * down >= SAME_FACE_OVERLAP * f[2] * f[3]
+
+    order = sorted(range(len(faces)), key=lambda i: -float(faces[i][2] * faces[i][3]))
+    kept: list[int] = []
+    for i in order:
+        if _plausible(faces[i]) and not any(same_face(faces[i], faces[k]) for k in kept):
+            kept.append(i)
+    return faces[sorted(kept or order[:1])]
 
 
 def _detect_faces(bgr: np.ndarray):
@@ -120,7 +149,7 @@ def _detect_faces(bgr: np.ndarray):
     if faces is not None and s < 1.0:
         faces = faces.copy()
         faces[:, :14] /= s
-    return faces
+    return _separate_faces(faces)
 
 
 def skin_tone_mask(bgr: np.ndarray) -> np.ndarray:
@@ -205,7 +234,7 @@ def lip_mask(bgr: np.ndarray, face_row) -> tuple[np.ndarray, tuple, bool]:
     lips = A > skin_a + max(6.0, 3.0 * mad_a)
     teeth = (L > skin_L + 20) & (np.abs(A - 128) + np.abs(B - 128) < 28)
     ind = cv2.morphologyEx((lips | teeth).astype(np.uint8), cv2.MORPH_OPEN,
-                           _odd_kernel(mw * 0.03)).astype(np.float32)
+                           _odd_kernel(mw * 0.03))
 
     # Rows: share of the centre columns (under the nose) that look like lip.
     cx = int(round(c[0] - x0))
@@ -217,8 +246,10 @@ def lip_mask(bgr: np.ndarray, face_row) -> tuple[np.ndarray, tuple, bool]:
     # strongest; an open smile shows as several bands right next to each
     # other (upper lip, teeth, lower lip, split by the dark mouth), so
     # neighbours within a small gap are added. Reddish skin further away
-    # (philtrum, chin) is not.
-    band_runs = [r for r in _runs(rows > 0.3, max_gap=int(0.06 * mw))
+    # (philtrum, chin) is not. The small margin settles exact ties, which rounding
+    # would otherwise tip either way, the same way in every build.
+    tie = 1e-9
+    band_runs = [r for r in _runs(rows > 0.3 + tie, max_gap=int(0.06 * mw))
                  if -0.4 * mw <= (r[0] + r[1]) / 2 - ecy <= 0.45 * mw]
     if band_runs:
         top, bot = max(band_runs, key=lambda r: rows[r[0]:r[1] + 1].sum())
@@ -227,7 +258,7 @@ def lip_mask(bgr: np.ndarray, face_row) -> tuple[np.ndarray, tuple, bool]:
             grew = False
             for r in band_runs:
                 gap = max(r[0] - bot, top - r[1])
-                if 0 < gap <= 0.15 * mw and rows[r[0]:r[1] + 1].max() >= 0.45 \
+                if 0 < gap <= 0.15 * mw and rows[r[0]:r[1] + 1].max() >= 0.45 - tie \
                         and max(bot, r[1]) - min(top, r[0]) <= 0.65 * mw:
                     top, bot, grew = min(top, r[0]), max(bot, r[1]), True
         if 0.1 * mw <= bot - top <= 0.9 * mw:
@@ -367,19 +398,31 @@ def _paint(area: np.ndarray, window_mask: np.ndarray, origin: tuple) -> None:
     region[window_mask[:region.shape[0], :region.shape[1]] > 0] = 255
 
 
-def build_skin_mask(bgr: np.ndarray, feather: float = 1.0) -> np.ndarray:
+def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
+                    face_only: bool = False) -> np.ndarray:
     """Return a float32 mask in [0,1]: 1 where skin should be smoothed.
 
-    Uses YuNet face geometry when available; otherwise falls back to skin tone.
+    Uses the segmentation model (skin_segment.py) for skin, with body skin left
+    out if face_only. Faces it can't speak for, or every face if it's missing,
+    use YuNet's face geometry; without a face the mask comes from skin tone.
+    feather softens that older outline; the model's outline is already soft.
     """
     h, w = bgr.shape[:2]
-    faces = _detect_faces(bgr)
+    if faces is None:
+        faces = _detect_faces(bgr)
     face_area = np.zeros((h, w), dtype=np.uint8)
     protect = np.zeros((h, w), dtype=np.uint8)   # eyes, brows, lips: never smoothed
     found = False
 
+    model_area, covered = None, ()
     if faces is not None and len(faces) > 0:
-        for f in faces:
+        import skin_segment
+        seg = skin_segment.segment(bgr, faces)
+        if seg is not None:
+            model_area = skin_segment.skin_area(seg, faces, face_only)
+            covered = seg.covered if model_area is not None else ()
+
+        for i, f in enumerate(faces):
             x, y, fw, fh = f[:4]
             rex, rey = f[4], f[5]      # right eye
             lex, ley = f[6], f[7]      # left eye
@@ -387,10 +430,11 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0) -> np.ndarray:
 
             # Face oval: ellipse over the box, extended a bit down to the chin
             # and in slightly at the sides.
-            cx, cy = x + fw / 2.0, y + fh * 0.55
-            ax, ay = fw * 0.52, fh * 0.72
-            cv2.ellipse(face_area, (int(cx), int(cy)), (int(ax), int(ay)),
-                        0, 0, 360, 255, -1)
+            if i not in covered:
+                cx, cy = x + fw / 2.0, y + fh * 0.55
+                ax, ay = fw * 0.52, fh * 0.72
+                cv2.ellipse(face_area, (int(cx), int(cy)), (int(ax), int(ay)),
+                            0, 0, 360, 255, -1)
             found = True
 
             # Protect the eyes, brows and lips themselves (found from how
@@ -406,17 +450,23 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0) -> np.ndarray:
             m, origin, _ = lip_mask(bgr, f)
             _paint(protect, m, origin)
 
-    if not found:
-        face_area = skin_tone_mask(bgr)
-    else:
-        # Drop non-skin pixels (hair, glasses) that fall inside the oval.
-        tone = cv2.dilate(skin_tone_mask(bgr), np.ones((9, 9), np.uint8))
-        face_area = cv2.bitwise_and(face_area, tone)
-
     # Feather the face outline. Blur radius scales with image size.
     diag = (h * h + w * w) ** 0.5
     k = max(3, int(diag * 0.01 * max(feather, 0.01))) | 1
-    soft = cv2.GaussianBlur(face_area.astype(np.float32) / 255.0, (k, k), 0)
+    if found and len(covered) == len(faces):
+        soft = np.zeros((h, w), np.float32)
+    else:
+        if not found:
+            face_area = skin_tone_mask(bgr)
+        else:
+            # Drop non-skin pixels (hair, glasses) that fall inside the oval.
+            tone = cv2.dilate(skin_tone_mask(bgr), np.ones((9, 9), np.uint8))
+            face_area = cv2.bitwise_and(face_area, tone)
+        soft = cv2.GaussianBlur(face_area.astype(np.float32) / 255.0, (k, k), 0)
+    if model_area is not None:
+        mx, my, area = model_area
+        here = soft[my:my + area.shape[0], mx:mx + area.shape[1]]
+        np.maximum(here, area, out=here)
     if found:
         # Eyes, brows and lips get a much narrower soft edge, placed just
         # outside them, so lashes and lip edges stay fully protected.
@@ -426,97 +476,418 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0) -> np.ndarray:
     return np.clip(soft, 0.0, 1.0)
 
 
-WORK_PIXELS = 1.5e6   # smoothing works on at most this many pixels
+WORK_PIXELS = 1.5e6   # tone smoothing works on at most this many pixels
+STRIP_ROWS = 256      # full-resolution work is done this many rows at a time
+
+# Settings, derived from physical sizes on a roughly 15 cm wide face and from
+# skin statistics measured on test photos.
+#   Fractions of face width: split, luma_radius, chroma_radius.
+#   luma_edge / chroma_edge: local spread (0..1) at about strength 0.5 that the
+#       guided filter treats as a real edge rather than something to smooth.
+#   Multiples of the photo's own median detail level: line_*, keep_*.
+TUNE = {
+    "split": 0.006,          # detail/tone split, about 1 mm: visible skin grain stays detail
+    "split_edge": 0.08,      # contrast (0..1) above which something stays out of the detail layer
+    "luma_radius": 0.015,    # about 2 mm: small marks and uneven tone
+    "luma_edge": 0.045,
+    "chroma_radius": 0.05,   # about 7.5 mm: redness and blotches
+    "chroma_edge": 0.05,
+    "contour": 1.0,          # how much large-scale tone change to undo (keeps shading)
+    "contour_ratio": 1.5,    # "large-scale" starts at this many smoothing radii
+    "line_lo": 2.5,          # brightness detail above pores: fine lines
+    "line_hi": 5.0,
+    "line_cut": 0.8,         # share of the kept texture removed from fine lines
+    "keep_lo": 9.0,          # brightness detail this strong is a real edge: left alone
+    "keep_hi": 16.0,
+    "keep_colour_lo": 3.5,   # colour detail this strong (lashes, stray hair): left alone
+    "keep_colour_hi": 7.0,
+    "pore_size": 0.0012,     # noise blur: a fraction of face width, puts pits about 1.2 mm apart
+    "pore_band": 2.0,        # larger structure is removed from this many times that size
+    "pore_lean": 0.5,        # dark side this much deeper than average, light side this much less
+    "pore_depth": 1.0,       # at full slider, the median pit matches the photo's own median detail
+    "pore_min_level": 0.006, # softer skin than this (0..1) is treated as this, so the slider still works there
+}
+MIN_PORE_SIGMA = 0.6      # px; pores on faces too small to reach this get fainter instead
+MIN_PORE_GAIN = 0.15      # faces whose pores would be fainter than this are skipped: under a third of a level
+PORE_SEED = 0x9E3779B9
+PORE_PATCH = 256          # the noise's spread is measured once, on a patch this wide
+SOFT_BLUR_MIN = 1.4       # _soft_blur can't blur less than this sigma
+NO_FACE_WIDTH = 0.25      # assumed face width, as a fraction of the image diagonal
+GROUP_RATIO = 1.5         # faces within this size ratio share one smoothing pass
+MIN_SPLIT_SIGMA = 0.6     # px; below this a blur no longer separates anything
+SPLIT_RADIUS_PER_SIGMA = 1.2  # guided filter radius that blurs about as much as a Gaussian
+MIN_DETAIL_LEVEL = 0.002  # 0..1; half an 8-bit step, so clean skin can't divide by ~0
+LEVEL_BANDS = 8           # rows of samples used to measure the detail level
+LEVEL_BAND_ROWS = 32
+_LUMA = np.array([0.114, 0.587, 0.299], np.float32)   # B, G, R weights of brightness
 
 
-def _smooth_layer(bgr: np.ndarray, strength: float, diag: float | None = None,
-                  scale: float = 1.0) -> np.ndarray:
-    """Edge-preserving smoothing whose intensity scales with strength (0..1).
+def guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) -> np.ndarray:
+    """Guided filter (He, Sun, Tang, "Guided Image Filtering", ECCV 2010).
 
-    diag  : diagonal of the full photo (sets the smoothing radius); defaults
-            to this image's own.
-    scale : how much `bgr` was shrunk from the full photo; the radius is
-            shrunk with it, so the same area of skin is smoothed.
+    An edge-preserving blur of src that follows the edges of guide. Both are
+    float32 with the same channels (each channel is filtered on its own). Local
+    variation well below sqrt(eps) is flattened; edges well above it are kept.
+    Built only from box filters, so its cost doesn't depend on the radius, and
+    the browser version can match it.
     """
-    strength = float(np.clip(strength, 0.0, 1.0))
-    if diag is None:
-        diag = (bgr.shape[0] ** 2 + bgr.shape[1] ** 2) ** 0.5
-    d = max(5, int(diag * 0.006 * scale))
-    sigma_color = 20 + strength * 90
-    sigma_space = max(1.0, (15 + strength * 45) * scale)
-    iterations = 1 + int(round(strength * 2))
+    size = (2 * radius + 1, 2 * radius + 1)
 
-    # GPU path: run the bilateral passes on a UMat. Any OpenCL failure falls
-    # through to the CPU path below.
-    if _USE_OPENCL:
-        try:
-            u = cv2.UMat(bgr)
-            for _ in range(iterations):
-                u = cv2.bilateralFilter(u, d, sigma_color, sigma_space)
-            return u.get()
-        except cv2.error:
-            pass
+    def box(a):
+        return cv2.boxFilter(a, cv2.CV_32F, size, normalize=True, borderType=cv2.BORDER_DEFAULT)
 
-    out = bgr
-    for _ in range(iterations):
-        out = cv2.bilateralFilter(out, d, sigma_color, sigma_space)
-    return out
+    mean_g, mean_s = box(guide), box(src)
+    var_g = box(guide * guide) - mean_g * mean_g
+    cov = box(guide * src) - mean_g * mean_s
+    a = cov / (var_g + eps)
+    b = mean_s - a * mean_g
+    return box(a) * guide + box(b)
+
+
+def _soft_blur(a: np.ndarray, sigma: float) -> np.ndarray:
+    """Three box blurs: practically a Gaussian of this sigma, at a cost that
+    doesn't grow with it (the wide blurs here would otherwise dominate the run time)."""
+    radius = max(1, round((np.sqrt(4.0 * sigma * sigma + 1.0) - 1.0) / 2.0))
+    size = (2 * radius + 1, 2 * radius + 1)
+    for _ in range(3):
+        a = cv2.boxFilter(a, cv2.CV_32F, size, normalize=True, borderType=cv2.BORDER_DEFAULT)
+    return a
+
+
+def _smoothstep(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _face_widths(faces, diag: float) -> np.ndarray:
+    if faces is None or len(faces) == 0:
+        return np.array([NO_FACE_WIDTH * diag], np.float64)
+    return np.asarray(faces, np.float64)[:, 2]
+
+
+def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
+                   shape: tuple[int, int]) -> list[tuple[float, np.ndarray | None]]:
+    """[(face width in full-resolution pixels, weight map or None)].
+
+    Faces of similar size share one smoothing pass. Very different sizes get
+    separate passes, blended by a soft map of which face each pixel is nearest
+    to. Most photos have one group, which needs no map.
+    """
+    order = np.argsort(widths, kind="stable")
+    groups: list[list[int]] = []
+    for i in order:
+        if groups and widths[i] <= GROUP_RATIO * widths[groups[-1][0]]:
+            groups[-1].append(int(i))
+        else:
+            groups.append([int(i)])
+    mean_width = [float(np.exp(np.mean(np.log(widths[g])))) for g in groups]
+    if len(groups) == 1:
+        return [(mean_width[0], None)]
+
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    best = np.full(shape, np.inf, np.float32)
+    nearest = np.zeros(shape, np.int32)
+    f = np.asarray(faces, np.float64)
+    for g, members in enumerate(groups):
+        for i in members:
+            cx = (f[i, 0] + f[i, 2] / 2 - x0) * scale
+            cy = (f[i, 1] + f[i, 3] / 2 - y0) * scale
+            d = np.hypot(xx - cx, yy - cy) / (f[i, 2] * scale)
+            closer = d < best
+            best[closer] = d[closer]
+            nearest[closer] = g
+    # Soft edges, but narrower than the smallest face so it fully gets its own pass.
+    sigma = max(2.0, 0.25 * float(widths.min()) * scale)
+    maps = [cv2.GaussianBlur((nearest == g).astype(np.float32), (0, 0), sigma)
+            for g in range(len(groups))]
+    total = np.sum(maps, axis=0) + 1e-6
+    return [(mean_width[g], maps[g] / total) for g in range(len(groups))]
+
+
+def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, scale: float,
+                 strength: float) -> np.ndarray:
+    """What to add to each pixel's tone layer, on a reduced copy of the region
+    (scaled back up by the caller): float32 BGR, working rows by full width.
+
+    Brightness is smoothed over a small radius and colour over a wider one,
+    guided by brightness so it can't cross real edges. Changing colour alone
+    doesn't flatten a face, but changing brightness can, so the large-scale
+    part of each change is removed again: small marks go, shading stays.
+    """
+    t = TUNE
+    rh, rw = roi.shape[:2]
+    if scale < 1.0:
+        size = (max(1, round(rw * scale)), max(1, round(rh * scale)))
+        work = cv2.resize(roi, size, interpolation=cv2.INTER_AREA)
+        mask_w = cv2.resize(mask, size, interpolation=cv2.INTER_AREA)
+    else:
+        work, mask_w = roi, mask
+    work = work.astype(np.float32) / 255.0
+    if sigma * scale >= 0.5:
+        # Only from skin, or the backdrop's colour would mix into the skin at its edge.
+        s = sigma * scale
+        work = _soft_blur(work * mask_w[:, :, None], s) / (_soft_blur(mask_w, s)[:, :, None] + 1e-4)
+    Y, Cr, Cb = cv2.split(cv2.cvtColor(work, cv2.COLOR_BGR2YCrCb))
+
+    d_y = np.zeros_like(Y)
+    d_cr = np.zeros_like(Y)
+    d_cb = np.zeros_like(Y)
+    eps_y = (t["luma_edge"] * (0.5 + strength)) ** 2
+    eps_c = (t["chroma_edge"] * (0.5 + strength)) ** 2
+
+    def mask_blur(sigma_m):
+        if sigma_m not in mask_blurs:
+            mask_blurs[sigma_m] = _soft_blur(mask_w, sigma_m) + 1e-4
+        return mask_blurs[sigma_m]
+
+    def change(plane, radius, eps):
+        # Normalized convolution (Knutsson & Westin, 1993) reads only from skin,
+        # so hair and background can't leak in. First for the filter's input: skin
+        # and a coloured backdrop can be equally bright, and then the brightness
+        # guide can't keep the backdrop's colour off the skin beside it. Everything
+        # outside the skin takes the colour of the skin nearby.
+        here = mask_w * plane + (1.0 - mask_w) * (_soft_blur(plane * mask_w, radius) / mask_blur(radius))
+        d = guided_filter(Y, here, radius, eps) - here
+        # Then for the large-scale part of the change.
+        sigma_c = t["contour_ratio"] * radius
+        return d - t["contour"] * _soft_blur(d * mask_w, sigma_c) / mask_blur(sigma_c)
+
+    mask_blurs: dict[float, np.ndarray] = {}
+    for width, weight in regions_of(Y.shape):
+        w = 1.0 if weight is None else weight
+        r_y = max(1, round(width * scale * t["luma_radius"]))
+        r_c = max(2, round(width * scale * t["chroma_radius"]))
+        d_y += w * change(Y, r_y, eps_y)
+        d_cr += w * change(Cr, r_c, eps_c)
+        d_cb += w * change(Cb, r_c, eps_c)
+
+    # The YCrCb change expressed in B, G, R (OpenCV's float conversion).
+    delta = np.dstack([d_y + 1.773 * d_cb, d_y - 0.714 * d_cr - 0.344 * d_cb, d_y + 1.403 * d_cr])
+    if delta.shape[1] != rw:
+        delta = cv2.resize(delta, (rw, delta.shape[0]), interpolation=cv2.INTER_LINEAR)
+    return delta
+
+
+def _detail_strip(roi: np.ndarray, y0: int, y1: int, sigma: float):
+    """Rows y0..y1 of the region as float32, and their detail layer.
+
+    The split is edge-preserving: with a plain blur, part of every strong edge
+    would land in the detail layer, and reducing detail would then soften it.
+    Filters with enough extra rows that strip edges can't show.
+    """
+    radius = max(1, round(SPLIT_RADIUS_PER_SIGMA * sigma))
+    margin = 2 * radius + 1
+    a, b = max(0, y0 - margin), min(roi.shape[0], y1 + margin)
+    part = roi[a:b].astype(np.float32) / 255.0
+    high = part - guided_filter(part, part, radius, TUNE["split_edge"] ** 2)
+    return part[y0 - a:y1 - a], high[y0 - a:y1 - a]
+
+
+def _detail_level(roi: np.ndarray, mask: np.ndarray, sigma: float) -> float:
+    """Median brightness detail on skin well inside the mask, in 0..1 units.
+
+    Skin detail strength varies with exposure, sharpness and resolution, so
+    the detail bands are multiples of this rather than fixed values. Measured
+    on evenly spaced rows, which is enough for a stable median.
+    """
+    rows = np.flatnonzero((mask > 0.9).any(axis=1))
+    if len(rows) == 0:
+        return MIN_DETAIL_LEVEL
+    samples = []
+    for i in range(LEVEL_BANDS):
+        y0 = int(rows[(2 * i + 1) * len(rows) // (2 * LEVEL_BANDS)])
+        y1 = min(roi.shape[0], y0 + LEVEL_BAND_ROWS)
+        _, high = _detail_strip(roi, y0, y1, sigma)
+        samples.append(np.abs(high @ _LUMA)[mask[y0:y1] > 0.9])
+    samples = np.concatenate(samples)
+    return max(MIN_DETAIL_LEVEL, float(np.median(samples))) if samples.size else MIN_DETAIL_LEVEL
+
+
+def _position_noise(x0: int, y0: int, w: int, h: int) -> np.ndarray:
+    """Noise in -1..1 from each pixel's position, so every run and both apps get
+    the same values. Positions up to 65536 px are distinct and the hash (the
+    finalizer of MurmurHash3) maps distinct inputs to distinct outputs, so the
+    pattern never repeats within a photo.
+    """
+    xs = np.arange(x0, x0 + w, dtype=np.int64) & 0xFFFF
+    ys = np.arange(y0, y0 + h, dtype=np.int64) & 0xFFFF
+    v = ((ys[:, None] << 16) | xs[None, :]).astype(np.uint32) ^ PORE_SEED
+    v ^= v >> 16
+    v *= 0x85EBCA6B
+    v ^= v >> 13
+    v *= 0xC2B2AE35
+    v ^= v >> 16
+    return (v >> 8).astype(np.float32) / 8388608.0 - 1.0
+
+
+def _pore_band(x0: int, y0: int, w: int, h: int, sigma: float) -> np.ndarray:
+    """Noise with structure at one size only: finer grain is blurred away and
+    anything larger is subtracted, so it can't read as blotches."""
+    noise = _position_noise(x0, y0, w, h)
+    fine = _soft_blur(noise, sigma) if sigma >= SOFT_BLUR_MIN else cv2.GaussianBlur(noise, (0, 0), sigma)
+    return fine - _soft_blur(fine, TUNE["pore_band"] * sigma)
+
+
+def _lean_dark(v: np.ndarray) -> np.ndarray:
+    """Pores are pits: deepen the dark side and flatten the light side."""
+    lean = TUNE["pore_lean"]
+    return np.where(v < 0, v * (1.0 + lean), v * (1.0 - lean))
+
+
+def _pore_groups(regions, rw: int, work_rows: int) -> list[tuple]:
+    """(sigma, gain, spread, mean, weight) per group of similar face sizes.
+
+    Faces too small to show pores get fainter ones, then none, so they don't
+    pick up a grain that's coarse for their size. The fade is about how much
+    real pores weaken when a photo is shrunk, so a preview shows roughly what the
+    export will look like at that size. spread and mean are measured on a fixed
+    patch, which keeps every strip on the same scale. weight is (work_rows, rw),
+    or None for one group.
+    """
+    groups = []
+    for width, weight in regions:
+        size = width * TUNE["pore_size"]
+        gain = min(1.0, size / MIN_PORE_SIGMA)
+        if gain < MIN_PORE_GAIN:
+            continue
+        sigma = max(MIN_PORE_SIGMA, size)
+        band = _pore_band(0, 0, PORE_PATCH, PORE_PATCH, sigma)
+        spread = float(np.median(np.abs(band)))
+        mean = float(np.mean(_lean_dark(band / spread), dtype=np.float64))
+        if weight is not None:
+            weight = cv2.resize(weight, (rw, work_rows), interpolation=cv2.INTER_LINEAR)
+        groups.append((sigma, gain, spread, mean, weight))
+    return groups
+
+
+def _pore_strip(group: tuple, x0: int, y0: int, w: int, h: int) -> np.ndarray:
+    """One group's pattern for a strip: median size 1, averaging zero, leaning
+    dark. Made with enough extra pixels that strip edges can't show."""
+    sigma, gain, spread, mean, _ = group
+    reach = int(np.ceil((4.0 + 3.0 * TUNE["pore_band"]) * sigma)) + 4
+    band = _pore_band(x0 - reach, y0 - reach, w + 2 * reach, h + 2 * reach, sigma)
+    return gain * (_lean_dark(band[reach:reach + h, reach:reach + w] / spread) - mean)
+
+
+def _near_edge(roi: np.ndarray, y0: int, y1: int, radius: int, lo: float, hi: float) -> np.ndarray:
+    """0..1 for rows y0..y1: how strongly each pixel sits by a hard edge or a hair.
+
+    The detail layer can't show this, because its edge-preserving split keeps
+    strong edges out of it. A plain box blur doesn't, so what it changes does.
+    """
+    a, b = max(0, y0 - radius), min(roi.shape[0], y1 + radius)
+    luma = (roi[a:b].astype(np.float32) / 255.0) @ _LUMA
+    size = (2 * radius + 1, 2 * radius + 1)
+    local = luma - cv2.boxFilter(luma, cv2.CV_32F, size, normalize=True, borderType=cv2.BORDER_DEFAULT)
+    return _smoothstep(np.abs(local[y0 - a:y1 - a]), lo, hi)
 
 
 def smooth_face(
     bgr: np.ndarray,
     strength: float = 0.6,
-    texture: float = 0.35,
+    texture: float = 0.6,
     mask: np.ndarray | None = None,
+    faces=None,
+    pores: float = 0.0,
 ) -> np.ndarray:
-    """Smooth facial skin.
+    """Smooth skin, keeping its shape and pores.
 
     strength : 0..1  how much to smooth (0 = original, 1 = maximum).
     texture  : 0..1  how much original pore/detail to keep (higher = less plastic).
     mask     : optional precomputed float mask from build_skin_mask (for speed).
+    faces    : optional YuNet rows from _detect_faces, in this image's pixels.
+    pores    : 0..1  how much synthetic pore texture to add (0 = none).
+
+    The region is split into a tone layer and a detail layer, using sizes
+    relative to the face. The tone layer gets _tone_change. The detail layer is
+    treated by how strong it is at each pixel: pores are reduced according to
+    texture, stronger detail such as fine lines is reduced more, and the
+    strongest (real edges, lashes, stray hairs) is left alone.
+
+    Synthetic pores are scaled to the detail measured on this photo and sized to
+    the face. They change brightness only and follow the smoothing: through the
+    mask, in proportion to strength, and not on anything left alone above.
     """
     strength = float(np.clip(strength, 0.0, 1.0))
     if strength <= 0.0:
         return bgr.copy()
+    texture = float(np.clip(texture, 0.0, 1.0))
+    pores = float(np.clip(pores, 0.0, 1.0))
 
+    if faces is None:
+        faces = _detect_faces(bgr)
     if mask is None:
         mask = build_skin_mask(bgr)
 
-    # Only the area the mask touches needs work (plus a border so the filter
-    # sees real neighbours at the edge).
+    # Only the area the mask touches needs work, plus enough border that the
+    # filters see real neighbours at its edge.
+    t = TUNE
     h, w = bgr.shape[:2]
     diag = (h * h + w * w) ** 0.5
     ys, xs = np.nonzero(mask > 1e-3)
     if len(ys) == 0:
         return bgr.copy()
-    pad = int(diag * 0.006) + 8
-    y0, y1 = max(0, ys.min() - pad), min(h, ys.max() + 1 + pad)
-    x0, x1 = max(0, xs.min() - pad), min(w, xs.max() + 1 + pad)
+    widths = _face_widths(faces, diag)
+    pad = int(np.ceil(float(widths.max()) * t["chroma_radius"])) + 8
+    y0, y1 = max(0, int(ys.min()) - pad), min(h, int(ys.max()) + 1 + pad)
+    x0, x1 = max(0, int(xs.min()) - pad), min(w, int(xs.max()) + 1 + pad)
     roi = bgr[y0:y1, x0:x1]
+    mask_r = mask[y0:y1, x0:x1].astype(np.float32)
     rh, rw = roi.shape[:2]
 
-    # Smooth a reduced copy of large regions (a 24 MP photo would otherwise
-    # take tens of seconds), then scale the smoothed base back up. The fine
-    # detail the reduced copy can't hold is mostly what smoothing removes
-    # anyway; what is kept comes back below at full resolution.
     scale = min(1.0, (WORK_PIXELS / (rh * rw)) ** 0.5)
-    if scale < 1.0:
-        small = cv2.resize(roi, (max(1, round(rw * scale)), max(1, round(rh * scale))),
-                           interpolation=cv2.INTER_AREA)
-        base = _smooth_layer(small, strength, diag, scale)
-        base = cv2.resize(base, (rw, rh), interpolation=cv2.INTER_LINEAR).astype(np.float32)
-    else:
-        base = _smooth_layer(roi, strength, diag).astype(np.float32)
+    sigma = max(MIN_SPLIT_SIGMA, float(np.median(widths)) * t["split"])
 
-    # High-frequency texture from the original, added back at `texture` amount.
-    blur = cv2.GaussianBlur(roi, (0, 0), 3).astype(np.float32)
-    high = roi.astype(np.float32) - blur
-    smoothed = base + texture * high
+    def regions_of(shape):
+        return _scale_regions(faces, widths, scale, x0, y0, shape)
 
-    alpha = (mask[y0:y1, x0:x1] * strength)[:, :, None]
-    blended = roi.astype(np.float32) * (1.0 - alpha) + smoothed * alpha
+    tone = _tone_change(roi, mask_r, regions_of, sigma, scale, strength)
+    work_rows = tone.shape[0]
+    level = _detail_level(roi, mask_r, sigma)
+    pore_groups = []
+    if pores > 0.0:
+        work_cols = max(1, round(rw * scale)) if scale < 1.0 else rw
+        pore_groups = _pore_groups(regions_of((work_rows, work_cols)), rw, work_rows)
+    pore_amount = pores * t["pore_depth"] * max(level, t["pore_min_level"])
+    edge_radius = max(1, round(SPLIT_RADIUS_PER_SIGMA * sigma))
+
     result = bgr.copy()
-    result[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+    for top in range(0, rh, STRIP_ROWS):
+        bottom = min(rh, top + STRIP_ROWS)
+        part, high = _detail_strip(roi, top, bottom, sigma)
+
+        # Tone change for these rows: linear between working rows.
+        pos = (np.arange(top, bottom) + 0.5) * work_rows / rh - 0.5
+        below = np.floor(pos)
+        frac = (pos - below).astype(np.float32)[:, None, None]
+        i0 = np.clip(below.astype(np.int64), 0, work_rows - 1)
+        i1 = np.minimum(i0 + 1, work_rows - 1)
+        change = tone[i0] * (1.0 - frac) + tone[i1] * frac
+
+        luma = high @ _LUMA
+        amount = np.abs(luma)
+        colour = np.abs(high - luma[:, :, None]).max(axis=2)
+        keep = np.maximum(
+            _smoothstep(amount, t["keep_lo"] * level, t["keep_hi"] * level),
+            _smoothstep(colour, t["keep_colour_lo"] * level, t["keep_colour_hi"] * level))
+        line = _smoothstep(amount, t["line_lo"] * level, t["line_hi"] * level)
+        removed = 1.0 - texture * (1.0 - t["line_cut"] * line)
+
+        # A real edge is left alone completely: the tone change was worked out
+        # on a blurred copy, so applying it there would soften the edge.
+        amount_here = (mask_r[top:bottom] * strength * (1.0 - keep))[:, :, None]
+        detail = change - removed[:, :, None] * high
+        if pore_groups:
+            room = 1.0 - _near_edge(roi, top, bottom, edge_radius, t["keep_lo"] * level, t["keep_hi"] * level)
+            for group in pore_groups:
+                pattern = _pore_strip(group, x0, y0 + top, rw, bottom - top)
+                weight = group[4]
+                if weight is not None:
+                    pattern = pattern * (weight[i0] * (1.0 - frac[:, :, 0]) + weight[i1] * frac[:, :, 0])
+                detail = detail + (pore_amount * pattern * room)[:, :, None]
+        out = part + amount_here * detail
+        result[y0 + top:y0 + bottom, x0:x1] = np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
     return result
 
 
@@ -528,17 +899,18 @@ def _cli() -> int:
     ap.add_argument("output", nargs="?", help="output path (default: *_smooth.jpg)")
     ap.add_argument("-s", "--strength", type=float, default=0.6,
                     help="smoothing 0..1 (default 0.6)")
-    ap.add_argument("-t", "--texture", type=float, default=0.35,
-                    help="texture retention 0..1 (default 0.35)")
-    ap.add_argument("--gpu", action="store_true",
-                    help="use the GPU (OpenCL) path if available")
+    ap.add_argument("-t", "--texture", type=float, default=0.6,
+                    help="texture retention 0..1 (default 0.6)")
+    ap.add_argument("-p", "--pores", type=float, default=0.0,
+                    help="add synthetic pore texture 0..1 (default 0, none)")
+    ap.add_argument("--face-only", action="store_true",
+                    help="treat the face only, not the neck or other body skin")
     ap.add_argument("-b", "--blemish", type=float, default=0.0,
-                    help="remove blemishes first, 0..1 (needs models/blemish_ffhqr.onnx)")
+                    help="remove blemishes first, 0..1")
+    ap.add_argument("--blemish-engine", choices=("classic", "network"), default=None,
+                    help="how to find blemishes: classic image processing (the default, no model) "
+                         "or the network (needs models/blemish_ffhqr.onnx, non-commercial licence)")
     args = ap.parse_args()
-
-    if args.gpu:
-        eff = set_opencl(True)
-        print(f"GPU (OpenCL): {'ON' if eff else 'requested but unavailable, using CPU'}")
 
     import photo_io
     img, info = photo_io.read(args.input)
@@ -546,15 +918,22 @@ def _cli() -> int:
         print(f"Could not read image: {args.input}")
         return 1
 
+    faces = _detect_faces(img)
+    mask = build_skin_mask(img, faces=faces, face_only=args.face_only)
+    healed = img
     if args.blemish > 0:
         import blemish
+        if args.blemish_engine:
+            blemish.ENGINE = args.blemish_engine
         if blemish.have_model():
-            img, n = blemish.remove_blemishes(img, amount=args.blemish)
-            print(f"Blemishes healed on {n} face(s)")
+            corr, n = blemish.correction(img, faces, mask)
+            healed = blemish.apply(img, corr, args.blemish)
+            print(blemish.count_text(n))
         else:
             print("Blemish model not found (models/blemish_ffhqr.onnx); skipping")
 
-    out = smooth_face(img, strength=args.strength, texture=args.texture)
+    out = smooth_face(healed, strength=args.strength, texture=args.texture, mask=mask,
+                      faces=faces, pores=args.pores)
 
     out_path = args.output
     if not out_path:

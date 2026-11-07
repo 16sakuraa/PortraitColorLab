@@ -1,9 +1,17 @@
 // Page logic: hands photos to the worker and shows its results.
 
 import { attachLoupe } from './loupe.js';
+import { attachMaskBrush } from './mask_brush.js';
 
 const $ = (id) => document.getElementById(id);
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+// The brush first: it wraps the picture, and the magnifier belongs inside that.
+const brush = attachMaskBrush({
+  image: $('after'),
+  button: $('editmask'),
+  onChange: () => requestRender(),
+  onModeChange: (editing) => { if (editing) { loupe.hide(); requestRender(); } },
+});
 const loupe = attachLoupe([$('before'), $('after')]);
 
 let ready = false, hasPhoto = false, engine = '';
@@ -31,13 +39,28 @@ const params = () => ({
   blemish: +$('blemish').value / 100,
   strength: +$('strength').value / 100,
   texture: +$('texture').value / 100,
+  pores: +$('pores').value / 100,
+  faceOnly: $('faceonly').checked,
+  strokes: brush.strokes,
+  wantMask: brush.editing,
 });
 
 function setControls(enabled) {
-  for (const id of ['blemish', 'strength', 'texture', 'download']) $(id).disabled = !enabled;
+  for (const id of ['blemish', 'strength', 'texture', 'pores', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
-let summary = '';
+let summary = '', opened = null;
+function describe({ healed, healedUnit }) {
+  const faces = opened.faces === 1 ? '1 face' : `${opened.faces} faces`;
+  const treated = !healed ? ''
+    : healedUnit === 'spots' ? ` · ${healed === 1 ? '1 spot' : `${healed} spots`} removed`
+      : ` · blemishes treated on ${healed}`;
+  summary = `${opened.width}×${opened.height} · ${faces} found` + treated +
+    (opened.colourProfile ? ' · colour profile kept' : '') +
+    ` · analysed in ${opened.seconds.toFixed(1)} s`;
+  status(summary);
+}
+
 let debounce = null;
 function scheduleRender() {
   if (!hasPhoto) return;
@@ -67,18 +90,21 @@ worker.onmessage = ({ data }) => {
       $('workspace').classList.remove('hidden');
       $('reset').classList.remove('hidden');
       setControls(true);
-      const faces = data.faces === 1 ? '1 face' : `${data.faces} faces`;
-      summary = `${data.width}×${data.height} · ${faces} found` +
-        (data.healed ? ` · blemishes treated on ${data.healed}` : '') +
-        (data.colourProfile ? ' · colour profile kept' : '') +
-        ` · analysed in ${data.seconds.toFixed(1)} s`;
-      status(summary);
+      opened = data;
+      describe(data);
       requestRender();
       break;
     }
+    case 'analysed':
+      describe(data);
+      break;
     case 'rendered':
       busy = false;
-      if (data.id >= shownId) { shownId = data.id; show('after', data.blob); }
+      if (data.id >= shownId) {
+        shownId = data.id;
+        show('after', data.blob);
+        if (data.maskBytes) brush.setMaskBytes(data.maskW, data.maskH, data.maskBytes);
+      }
       if (pending) { pending = false; requestRender(); }
       break;
     case 'exported': {
@@ -103,6 +129,7 @@ function openFile(file) {
   if (!file) return;
   if (!ready) { status('Still loading, one moment…', true); setTimeout(() => openFile(file), 500); return; }
   photoName = file.name.replace(/\.[^.]+$/, '') || 'photo';
+  brush.reset();
   setControls(false);
   status('Reading photo…', true);
   worker.postMessage({ type: 'open', file });
@@ -115,9 +142,11 @@ $('drop').addEventListener('dragleave', () => $('drop').classList.remove('over')
 $('drop').addEventListener('drop', (e) => { e.preventDefault(); $('drop').classList.remove('over'); openFile(e.dataTransfer.files[0]); });
 $('file').addEventListener('change', (e) => openFile(e.target.files[0]));
 
-for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval']]) {
+for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['pores', 'pval']]) {
   $(id).addEventListener('input', () => { $(label).textContent = $(id).value; scheduleRender(); });
 }
+
+$('faceonly').addEventListener('change', scheduleRender);
 
 $('download').addEventListener('click', () => {
   setControls(false);
@@ -127,6 +156,7 @@ $('download').addEventListener('click', () => {
 
 $('reset').addEventListener('click', () => {
   hasPhoto = false;
+  brush.reset();
   loupe.hide();
   $('drop').classList.remove('hidden');
   $('workspace').classList.add('hidden');
@@ -136,5 +166,7 @@ $('reset').addEventListener('click', () => {
   status(`Ready · running on the ${engine}.`);
 });
 
-status('Loading (about 40 MB the first time, then cached)…', true);
-worker.postMessage({ type: 'init' });
+status('Loading (about 55 MB the first time, then cached)…', true);
+// ?blemish=network uses the blemish network instead (non-commercial licence).
+const blemishEngine = new URLSearchParams(location.search).get('blemish') === 'network' ? 'network' : 'classic';
+worker.postMessage({ type: 'init', blemishEngine });

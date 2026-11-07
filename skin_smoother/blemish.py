@@ -1,8 +1,9 @@
 """
-Learned blemish removal (pimples, spots, small marks).
+Blemish removal (pimples, spots, small marks): the shared part, and the optional
+network. By default correction() uses blemish_classic.py, which needs no model.
 
-A small neural network trained on professionally retouched faces (FFHQR) runs
-on the CPU through OpenCV, so no GPU or extra install is needed.
+The network is a small one trained on professionally retouched faces (FFHQR). It
+runs on the CPU through OpenCV, so no GPU or extra install is needed.
 
 How a photo is processed, per face:
   1. From YuNet's eye and mouth points, cut out the face the same way the
@@ -31,6 +32,11 @@ SIZE = 1024          # the network's working resolution (FFHQ framing)
 _net = None
 _net_path = None
 
+# Which method correction() uses: "classic" (blemish_classic.py, the default,
+# needs no model) or "network" (this file; its model is non-commercial only).
+# Both give the same kind of output.
+ENGINE = os.environ.get("BLEMISH_ENGINE", "classic")
+
 
 def get_model_path() -> str | None:
     """Same search order as the face model: next to the .exe/script first,
@@ -47,7 +53,14 @@ def get_model_path() -> str | None:
 
 
 def have_model() -> bool:
-    return get_model_path() is not None
+    return ENGINE == "classic" or get_model_path() is not None
+
+
+def count_text(count: int) -> str:
+    """A correction's count in words: the network counts faces, classic counts spots."""
+    if ENGINE == "classic":
+        return f"{count} spot{'' if count == 1 else 's'} removed"
+    return f"blemishes healed on {count} face{'' if count == 1 else 's'}"
 
 
 def _get_net():
@@ -165,33 +178,6 @@ def _correction_for_face(bgr: np.ndarray, quad: np.ndarray):
     return x0, y0, back(corr), back(_WEIGHTS)
 
 
-def _plausible(face_row) -> bool:
-    """Does the landmark layout look like a face?
-
-    Ears, hair, dark corners and blurry background get detected as faces now
-    and then; running the network there would edit random texture. The score
-    can't separate them (real large faces often score only 0.6-0.75), but the
-    layout can. Measured on 294 real FFHQ faces (1st-99th percentile):
-      eye spacing / box width    0.41-0.56
-      eyes-to-mouth / eye spacing 0.75-1.38
-      eye line vs eyes-to-mouth  ~perpendicular (|cos| <= 0.04)
-      nose position eyes->mouth  0.52-0.79
-    The limits below leave room for turned and tilted heads (common in group
-    photos). A non-face that still slips through costs little: on hair or
-    jewellery the network changes almost nothing, and where its crop overlaps
-    a real face the blending in correction() favours the real face's crop.
-    """
-    e1, e2, nose, m1, m2 = (np.array(face_row[4 + 2 * k:6 + 2 * k], float) for k in range(5))
-    eye_avg, mouth_avg = (e1 + e2) / 2, (m1 + m2) / 2
-    ee, em = e2 - e1, mouth_avg - eye_avg
-    eye_d, em_d = float(np.hypot(*ee)), float(np.hypot(*em))
-    if eye_d < 0.28 * float(face_row[2]) or em_d < 1e-6:
-        return False
-    cos = abs(float(ee @ em)) / (eye_d * em_d)
-    t_nose = float((nose - eye_avg) @ em) / em_d ** 2
-    return 0.6 <= em_d / eye_d <= 2.2 and cos <= 0.12 and 0.35 <= t_nose <= 1.0
-
-
 MIN_QUAD = 96  # faces whose crop would be smaller than this are skipped
 
 
@@ -206,7 +192,7 @@ def select_faces(faces) -> list[np.ndarray]:
     """
     chosen: list[tuple[np.ndarray, np.ndarray]] = []
     for f in sorted(faces, key=lambda r: -float(r[2] * r[3])):
-        if not _plausible(f):
+        if not smoother._plausible(f):
             continue
         quad = ffhq_quad(f)
         if np.hypot(*(quad[3] - quad[0])) < MIN_QUAD:
@@ -218,16 +204,19 @@ def select_faces(faces) -> list[np.ndarray]:
     return [q for _, q in chosen]
 
 
-def correction(bgr: np.ndarray, faces=None):
-    """The network's correction for every face in the photo, and how many
-    faces it covers. Compute once per photo; apply() is then cheap, so an
-    amount slider can move freely.
+def correction(bgr: np.ndarray, faces=None, mask: np.ndarray | None = None):
+    """The correction for every face in the photo, and a count (see count_text).
+    Compute once per photo; apply() is then cheap, so an amount slider can move
+    freely. mask is the skin mask, which only the classic engine uses.
 
     The correction only covers the faces' region: (x0, y0, array HxWx3, float32,
     0..255 units), or None. Where two faces' crops overlap (people close
     together), each pixel takes a blend favouring the crop whose face is
     nearest, so nothing is corrected twice.
     """
+    if ENGINE == "classic":
+        import blemish_classic
+        return blemish_classic.correction(bgr, faces, mask)
     if _get_net() is None:
         return None, 0
     if faces is None:

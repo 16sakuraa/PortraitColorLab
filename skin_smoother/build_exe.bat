@@ -18,9 +18,7 @@ echo Installing build tools and dependencies...
 %PYEXE% -m pip install --quiet pyinstaller -r requirements.txt
 
 echo Building SkinSmoother.exe (this takes a minute or two)...
-%PYEXE% -m PyInstaller --noconfirm --onefile --name SkinSmoother ^
-  --add-data "models/face_detection_yunet.onnx;models" ^
-  --add-data "models/blemish_ffhqr.onnx;models" serve.py
+%PYEXE% -m PyInstaller --noconfirm SkinSmoother.spec
 
 echo.
 echo Done. Your program is here:  dist\SkinSmoother.exe

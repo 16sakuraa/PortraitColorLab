@@ -8,7 +8,7 @@
 // nose x, y, right mouth corner x, y, left mouth corner x, y, score].
 
 export const DETECT_MAX = 1280;
-const SCORE_THR = 0.6, NMS_THR = 0.3, TOP_K = 50, STRIDES = [8, 16, 32];
+const SCORE_THR = 0.6, NMS_THR = 0.3, TOP_K = 50, STRIDES = [8, 16, 32], SAME_FACE_OVERLAP = 0.3;
 
 export async function createSession(ort, url, providers) {
   return ort.InferenceSession.create(url, { executionProviders: providers });
@@ -63,7 +63,43 @@ export async function detectFaces(cv, ort, session, bgr) {
 
   const kept = nms(faces);
   if (s < 1) for (const f of kept) for (let k = 0; k < 14; k++) f[k] /= s;
-  return kept;
+  return separateFaces(kept);
+}
+
+// Does the landmark layout look like a face? (see smoother._plausible)
+export function plausible(f) {
+  const eyeAvg = [(f[4] + f[6]) / 2, (f[5] + f[7]) / 2];
+  const mouthAvg = [(f[10] + f[12]) / 2, (f[11] + f[13]) / 2];
+  const ee = [f[6] - f[4], f[7] - f[5]], em = [mouthAvg[0] - eyeAvg[0], mouthAvg[1] - eyeAvg[1]];
+  const eyeD = Math.hypot(ee[0], ee[1]), emD = Math.hypot(em[0], em[1]);
+  if (eyeD < 0.28 * f[2] || emD < 1e-6) return false;
+  const cos = Math.abs(ee[0] * em[0] + ee[1] * em[1]) / (eyeD * emD);
+  const tNose = ((f[8] - eyeAvg[0]) * em[0] + (f[9] - eyeAvg[1]) * em[1]) / (emD * emD);
+  return emD / eyeD >= 0.6 && emD / eyeD <= 2.2 && cos <= 0.12 && tNose >= 0.35 && tNose <= 1.0;
+}
+
+// Only one row per real face, in the same order (see smoother._separate_faces). A row
+// whose landmarks sit inside a larger face's box, or whose box is largely inside it,
+// is that face again; a row that doesn't look like a face goes too, unless it's all
+// there is.
+export function separateFaces(faces) {
+  if (faces.length < 2) return faces;
+  const sameFace = (f, g) => {
+    let cx = 0, cy = 0;
+    for (let k = 0; k < 5; k++) { cx += f[4 + 2 * k]; cy += f[5 + 2 * k]; }
+    cx /= 5; cy /= 5;
+    if (g[0] <= cx && cx <= g[0] + g[2] && g[1] <= cy && cy <= g[1] + g[3]) return true;
+    const across = Math.min(f[0] + f[2], g[0] + g[2]) - Math.max(f[0], g[0]);
+    const down = Math.min(f[1] + f[3], g[1] + g[3]) - Math.max(f[1], g[1]);
+    return across > 0 && down > 0 && across * down >= SAME_FACE_OVERLAP * f[2] * f[3];
+  };
+  const order = faces.map((_, i) => i).sort((a, b) => faces[b][2] * faces[b][3] - faces[a][2] * faces[a][3]);
+  const kept = [];
+  for (const i of order) {
+    if (plausible(faces[i]) && !kept.some((k) => sameFace(faces[i], faces[k]))) kept.push(i);
+  }
+  if (!kept.length) kept.push(order[0]);
+  return kept.sort((a, b) => a - b).map((i) => faces[i]);
 }
 
 // Greedy NMS on integer boxes, like cv::dnn::NMSBoxes.

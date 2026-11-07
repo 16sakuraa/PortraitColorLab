@@ -74,17 +74,20 @@ class App(tk.Tk):
         s1.pack(side=tk.LEFT, padx=(4, 16))
 
         ttk.Label(bar, text="Keep texture").pack(side=tk.LEFT)
-        self.texture = tk.DoubleVar(value=35)
+        self.texture = tk.DoubleVar(value=60)
         s2 = ttk.Scale(bar, from_=0, to=100, variable=self.texture,
                        command=self._on_slider, length=200)
         s2.pack(side=tk.LEFT, padx=(4, 16))
 
-        self.use_gpu = tk.BooleanVar(value=smoother.opencl_available())
-        gpu_chk = ttk.Checkbutton(bar, text="Use GPU", variable=self.use_gpu,
-                                  command=self._on_slider)
-        gpu_chk.pack(side=tk.LEFT, padx=(0, 16))
-        if not smoother.opencl_available():
-            gpu_chk.state(["disabled"])
+        ttk.Label(bar, text="Add pores").pack(side=tk.LEFT)
+        self.pores = tk.DoubleVar(value=0)
+        s3 = ttk.Scale(bar, from_=0, to=100, variable=self.pores,
+                       command=self._on_slider, length=160)
+        s3.pack(side=tk.LEFT, padx=(4, 16))
+
+        self.face_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Face only", variable=self.face_only,
+                        command=self._on_face_only).pack(side=tk.LEFT, padx=(0, 16))
 
         self.status = ttk.Label(bar, text="Open an image to begin.")
         self.status.pack(side=tk.RIGHT)
@@ -131,8 +134,8 @@ class App(tk.Tk):
 
         self.status.config(text="Detecting face…")
         self.update_idletasks()
-        self.preview_mask = smoother.build_skin_mask(self.preview_bgr)
-        self.preview_corr, _ = blemish.correction(self.preview_bgr)
+        self.preview_faces = smoother._detect_faces(self.preview_bgr)
+        self._analyse_preview()
         covered = float(self.preview_mask.mean())
         if covered < 0.002:
             self.status.config(text="No face detected — using skin-tone areas.")
@@ -142,6 +145,17 @@ class App(tk.Tk):
         self._orig_photo = to_photo(self.preview_bgr)
         self.orig_label.config(image=self._orig_photo)
         self.save_btn.config(state=tk.NORMAL)
+        self._render_preview()
+
+    def _analyse_preview(self):
+        self.preview_mask = smoother.build_skin_mask(self.preview_bgr, faces=self.preview_faces,
+                                                     face_only=self.face_only.get())
+        self.preview_corr, _ = blemish.correction(self.preview_bgr, self.preview_faces, self.preview_mask)
+
+    def _on_face_only(self):
+        if self.preview_bgr is None:
+            return
+        self._analyse_preview()
         self._render_preview()
 
     def _on_slider(self, _evt=None):
@@ -157,11 +171,11 @@ class App(tk.Tk):
             return
         s = self.strength.get() / 100.0
         t = self.texture.get() / 100.0
-        smoother.set_opencl(self.use_gpu.get())
         base = blemish.apply(self.preview_bgr, self.preview_corr,
                              self.blemish.get() / 100.0)
         out = smoother.smooth_face(base, strength=s, texture=t,
-                                   mask=self.preview_mask)
+                                   mask=self.preview_mask, faces=self.preview_faces,
+                                   pores=self.pores.get() / 100.0)
         self._smooth_photo = to_photo(out)
         self.smooth_label.config(image=self._smooth_photo)
 
@@ -184,15 +198,18 @@ class App(tk.Tk):
 
         s = self.strength.get() / 100.0
         t = self.texture.get() / 100.0
+        p = self.pores.get() / 100.0
 
-        gpu = self.use_gpu.get()
         b = self.blemish.get() / 100.0
+        face_only = self.face_only.get()
         info = self.photo_info
 
         def work():
-            smoother.set_opencl(gpu)
-            base, _ = blemish.remove_blemishes(self.full_bgr, amount=b)
-            out = smoother.smooth_face(base, strength=s, texture=t)
+            faces = smoother._detect_faces(self.full_bgr)
+            mask = smoother.build_skin_mask(self.full_bgr, faces=faces, face_only=face_only)
+            corr, _ = blemish.correction(self.full_bgr, faces, mask)
+            base = blemish.apply(self.full_bgr, corr, b)
+            out = smoother.smooth_face(base, strength=s, texture=t, mask=mask, faces=faces, pores=p)
             ok = photo_io.write(path, out, info)
             self.after(0, lambda: self._save_done(ok, path))
 

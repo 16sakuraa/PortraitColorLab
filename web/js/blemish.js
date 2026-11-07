@@ -5,6 +5,7 @@
 // Overlapping crops (people close together) are blended, never added.
 
 import { copyMat } from './cv.js';
+import { plausible } from './detect.js';
 
 export const SIZE = 1024;
 const MIN_QUAD = 96;
@@ -24,18 +25,6 @@ export function ffhqQuad(f) {
   const c = [eyeAvg[0] + em[0] * 0.1, eyeAvg[1] + em[1] * 0.1];
   return [[c[0] - x[0] - y[0], c[1] - x[1] - y[1]], [c[0] - x[0] + y[0], c[1] - x[1] + y[1]],
     [c[0] + x[0] + y[0], c[1] + x[1] + y[1]], [c[0] + x[0] - y[0], c[1] + x[1] - y[1]]];
-}
-
-// Does the landmark layout look like a face? (see blemish._plausible)
-export function plausible(f) {
-  const eyeAvg = [(f[4] + f[6]) / 2, (f[5] + f[7]) / 2];
-  const mouthAvg = [(f[10] + f[12]) / 2, (f[11] + f[13]) / 2];
-  const ee = [f[6] - f[4], f[7] - f[5]], em = [mouthAvg[0] - eyeAvg[0], mouthAvg[1] - eyeAvg[1]];
-  const eyeD = Math.hypot(ee[0], ee[1]), emD = Math.hypot(em[0], em[1]);
-  if (eyeD < 0.28 * f[2] || emD < 1e-6) return false;
-  const cos = Math.abs(ee[0] * em[0] + ee[1] * em[1]) / (eyeD * emD);
-  const tNose = ((f[8] - eyeAvg[0]) * em[0] + (f[9] - eyeAvg[1]) * em[1]) / (emD * emD);
-  return emD / eyeD >= 0.6 && emD / eyeD <= 2.2 && cos <= 0.12 && tNose >= 0.35 && tNose <= 1.0;
 }
 
 // Crop squares of the faces worth processing; largest first, a detection whose

@@ -33,12 +33,12 @@ function runs(flags, maxGap) {
   return out;
 }
 
-function percentile(values, p) {                 // numpy 'linear' method
+export function percentile(values, p) {          // numpy 'linear' method
   const a = Float32Array.from(values).sort();
   const pos = (a.length - 1) * p / 100, lo = Math.floor(pos), hi = Math.ceil(pos);
   return a[lo] + (a[hi] - a[lo]) * (pos - lo);
 }
-const median = (values) => percentile(values, 50);
+export const median = (values) => percentile(values, 50);
 
 // Copy of a sub-rectangle (so neighbourhood ops see it as a standalone image,
 // like a numpy slice passed to cv2).
@@ -143,7 +143,8 @@ export function lipMask(cv, bgr, f) {
   rows = conv;
   const sumOf = (r) => { let s = 0; for (let i = r[0]; i <= r[1]; i++) s += rows[i]; return s; };
   const maxOf = (r) => { let s = -Infinity; for (let i = r[0]; i <= r[1]; i++) s = Math.max(s, rows[i]); return s; };
-  const bands = runs(Array.from(rows, (v) => v > 0.3), Math.trunc(0.06 * mw))
+  const tie = 1e-9;      // settles exact ties, which rounding would otherwise tip either way
+  const bands = runs(Array.from(rows, (v) => v > 0.3 + tie), Math.trunc(0.06 * mw))
     .filter((r) => { const d = (r[0] + r[1]) / 2 - ecy; return d >= -0.4 * mw && d <= 0.45 * mw; });
   if (bands.length) {
     let [top, bot] = bands.reduce((a, b) => (sumOf(b) > sumOf(a) ? b : a));
@@ -152,7 +153,7 @@ export function lipMask(cv, bgr, f) {
       grew = false;
       for (const r of bands) {
         const gap = Math.max(r[0] - bot, top - r[1]);
-        if (gap > 0 && gap <= 0.15 * mw && maxOf(r) >= 0.45 && Math.max(bot, r[1]) - Math.min(top, r[0]) <= 0.65 * mw) {
+        if (gap > 0 && gap <= 0.15 * mw && maxOf(r) >= 0.45 - tie && Math.max(bot, r[1]) - Math.min(top, r[0]) <= 0.65 * mw) {
           top = Math.min(top, r[0]); bot = Math.max(bot, r[1]); grew = true;
         }
       }
@@ -311,27 +312,34 @@ export function browMask(cv, bgr, ex, ey, eyeD, angle) {
 
 // ---------- the mask ----------
 
+// modelArea: the skin the segmentation model found (skinArea in skin_segment.js), or
+// null. covered: the faces it can speak for. The other faces use their face geometry.
 // Returns { x0, y0, w, h, data: Float32Array } (values 0..1; zero outside).
-export function buildSkinMask(cv, bgr, faces, feather = 1.0) {
+export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = []) {
   const H = bgr.rows, W = bgr.cols;
   const diag = Math.hypot(H, W);
   const k = Math.max(3, Math.trunc(diag * 0.01 * Math.max(feather, 0.01))) | 1;
   const found = faces.length > 0;
+  const trusted = new Set(modelArea ? covered : []);
+  const ovals = faces.filter((_, i) => !trusted.has(i));
 
-  // Work only around the faces (everything else is 0 anyway).
+  // Work only around the skin (everything else is 0 anyway).
   let X0 = 0, Y0 = 0, X1 = W, Y1 = H;
   if (found) {
     X0 = W; Y0 = H; X1 = 0; Y1 = 0;
-    for (const f of faces) {
+    for (const f of ovals) {
       const cx = f[0] + f[2] / 2, cy = f[1] + f[3] * 0.55, ax = f[2] * 0.52, ay = f[3] * 0.72;
       X0 = Math.min(X0, cx - ax); X1 = Math.max(X1, cx + ax); Y0 = Math.min(Y0, cy - ay); Y1 = Math.max(Y1, cy + ay);
+    }
+    if (modelArea) {
+      X0 = Math.min(X0, modelArea.x0); X1 = Math.max(X1, modelArea.x0 + modelArea.w);
+      Y0 = Math.min(Y0, modelArea.y0); Y1 = Math.max(Y1, modelArea.y0 + modelArea.h);
     }
     const m = k + 32;
     X0 = Math.max(0, Math.floor(X0) - m); Y0 = Math.max(0, Math.floor(Y0) - m);
     X1 = Math.min(W, Math.ceil(X1) + m); Y1 = Math.min(H, Math.ceil(Y1) + m);
   }
   const RW = X1 - X0, RH = Y1 - Y0;
-  const region = crop(cv, bgr, X0, Y0, X1, Y1);
   let area = cv.Mat.zeros(RH, RW, cv.CV_8U);
   const protect = cv.Mat.zeros(RH, RW, cv.CV_8U);
   const paint = ({ mask, x0, y0 }) => {
@@ -346,35 +354,48 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0) {
     mask.delete();
   };
 
-  for (const f of faces) {
+  faces.forEach((f, i) => {
     const eyeD = Math.hypot(f[6] - f[4], f[7] - f[5]) || f[2] * 0.4;
-    cv.ellipse(area, new cv.Point(Math.trunc(f[0] + f[2] / 2 - X0), Math.trunc(f[1] + f[3] * 0.55 - Y0)),
-      new cv.Size(Math.trunc(f[2] * 0.52), Math.trunc(f[3] * 0.72)), 0, 0, 360, new cv.Scalar(255), -1);
+    if (!trusted.has(i)) {
+      cv.ellipse(area, new cv.Point(Math.trunc(f[0] + f[2] / 2 - X0), Math.trunc(f[1] + f[3] * 0.55 - Y0)),
+        new cv.Size(Math.trunc(f[2] * 0.52), Math.trunc(f[3] * 0.72)), 0, 0, 360, new cv.Scalar(255), -1);
+    }
     const angle = Math.atan2(f[7] - f[5], f[6] - f[4]) * 180 / Math.PI;
     for (const [ex, ey] of [[f[4], f[5]], [f[6], f[7]]]) {
       paint(eyeMask(cv, bgr, ex, ey, eyeD, angle));
       paint(browMask(cv, bgr, ex, ey, eyeD, angle));
     }
     paint(lipMask(cv, bgr, f));
-  }
-
-  const tone = skinToneMask(cv, region);
-  region.delete();
-  if (!found) {
-    area.delete();
-    area = tone;
-  } else {
-    const k9 = cv.Mat.ones(9, 9, cv.CV_8U);
-    cv.dilate(tone, tone, k9);
-    k9.delete();
-    cv.bitwise_and(area, tone, area);
-    tone.delete();
-  }
+  });
 
   const soft = new cv.Mat();
-  area.convertTo(soft, cv.CV_32F, 1 / 255);
+  if (!found || ovals.length) {
+    const region = crop(cv, bgr, X0, Y0, X1, Y1);
+    const tone = skinToneMask(cv, region);
+    region.delete();
+    if (!found) {
+      area.delete();
+      area = tone;
+    } else {
+      const k9 = cv.Mat.ones(9, 9, cv.CV_8U);
+      cv.dilate(tone, tone, k9);
+      k9.delete();
+      cv.bitwise_and(area, tone, area);
+      tone.delete();
+    }
+    area.convertTo(soft, cv.CV_32F, 1 / 255);
+    cv.GaussianBlur(soft, soft, new cv.Size(k, k), 0);
+  } else {
+    area.convertTo(soft, cv.CV_32F, 1 / 255);        // all zero: no face uses this method
+  }
   area.delete();
-  cv.GaussianBlur(soft, soft, new cv.Size(k, k), 0);
+  if (modelArea) {
+    const s = soft.data32F, a = modelArea.data;
+    for (let y = 0; y < modelArea.h; y++) {
+      const to = (y + modelArea.y0 - Y0) * RW + modelArea.x0 - X0, from = y * modelArea.w;
+      for (let x = 0; x < modelArea.w; x++) if (a[from + x] > s[to + x]) s[to + x] = a[from + x];
+    }
+  }
   if (found) {
     const ks = Math.max(3, Math.floor(k / 4)) | 1;
     const kg = kernel(cv, ks), guard = new cv.Mat();

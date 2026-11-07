@@ -6,17 +6,22 @@
 import { loadCv } from './cv.js';
 import { createSession, detectFaces } from './detect.js';
 import * as blemish from './blemish.js';
+import * as blemishClassic from './blemish_classic.js';
 import { buildSkinMask } from './skinmask.js';
+import { segment, skinArea } from './skin_segment.js';
 import { smoothFace } from './smooth.js';
+import * as maskEdit from './mask_edit.js';
 
 const LIB = new URL('../lib/', import.meta.url).href;
 const MODELS = new URL('../models/', import.meta.url).href;
 
 let state = null;
 
-// Loads OpenCV.js, onnxruntime-web and both models. Uses the graphics chip
+// Loads OpenCV.js, onnxruntime-web and the models. Uses the graphics chip
 // (WebGPU) when the browser offers it, otherwise the CPU (WebAssembly).
-export async function init(onProgress = () => {}) {
+// blemishEngine: 'classic' (blemish_classic.js, no model) or 'network' (blemish.js,
+// whose model is non-commercial only).
+export async function init(onProgress = () => {}, { blemishEngine = 'classic' } = {}) {
   if (state) return state;
   onProgress('Loading image tools…');
   const cv = await loadCv(LIB + 'opencv/opencv.js');
@@ -40,25 +45,60 @@ export async function init(onProgress = () => {}) {
     }
   };
   const detector = await make('face_detection_yunet.onnx');
-  const healer = await make('blemish_ffhqr.onnx');
-  state = { cv, ort, detector, healer, engine };
+  const healer = blemishEngine === 'network' ? await make('blemish_ffhqr.onnx') : null;
+  // Without this model the skin mask falls back to its older method.
+  const segmenter = await make('selfie_multiclass_256x256.onnx').catch(() => null);
+  state = { cv, ort, detector, healer, segmenter, engine, blemishEngine };
   return state;
 }
 
-export async function analyze(bgr) {
-  const { cv, ort, detector, healer } = state;
-  const faces = await detectFaces(cv, ort, detector, bgr);
-  const mask = buildSkinMask(cv, bgr, faces);
-  const { corr, count } = await blemish.correction(cv, ort, healer, bgr, faces);
-  return { faces, mask, corr, healed: count };
+// healed counts faces for the network and spots for the classic engine (healedUnit).
+// faceOnly leaves body skin out of the mask. previous is this photo's last analysis,
+// so switching faceOnly doesn't have to run the models again.
+export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
+  const { cv, ort, detector, healer, segmenter, blemishEngine } = state;
+  const faces = previous ? previous.faces : await detectFaces(cv, ort, detector, bgr);
+  const seg = previous ? previous.seg : await segment(cv, ort, segmenter, bgr, faces);
+  const area = seg ? skinArea(cv, seg, faces, faceOnly) : null;
+  const mask = buildSkinMask(cv, bgr, faces, 1.0, area, seg ? seg.covered : []);
+  const classic = blemishEngine === 'classic';
+  let corr, count;
+  if (classic) ({ corr, count } = blemishClassic.correction(cv, bgr, faces, mask));
+  else if (previous) ({ corr, healed: count } = previous);     // the network doesn't use the mask
+  else ({ corr, count } = await blemish.correction(cv, ort, healer, bgr, faces));
+  return { faces, seg, mask, corr, healed: count, healedUnit: classic ? 'spots' : 'faces' };
 }
 
-// params: { blemish: 0..1, strength: 0..1, texture: 0..1 }
+// params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1 }
 export function render(bgr, analysis, params) {
   const { cv } = state;
   const healed = blemish.apply(cv, bgr, analysis.corr, params.blemish);
-  const out = smoothFace(cv, healed, params.strength, params.texture, analysis.mask);
+  const out = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces, params.pores);
   healed.delete();
+  return out;
+}
+
+// A brush layer for a photo of this size holding these strokes (mask_edit.js).
+// previous is the last one, which saves repainting strokes it already holds.
+export function editLayer(w, h, strokes, previous = null) {
+  return maskEdit.layerFor(state.cv, w, h, strokes, previous);
+}
+
+// An analysis with the brush's edits applied, for an image of this size.
+export function withEdits(analysis, layer, w, h) {
+  if (!layer || !layer.strokes.length) return analysis;
+  const region = maskEdit.regionOf(state.cv, layer, w, h);
+  if (!region) return analysis;
+  return { ...analysis, mask: maskEdit.applyToMask(analysis.mask, region), corr: maskEdit.applyToCorrection(analysis.corr, region) };
+}
+
+// A mask as one byte per pixel of an image this size, for drawing it over the photo.
+export function maskBytes(mask, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < mask.h; y++) {
+    const to = (y + mask.y0) * w + mask.x0, from = y * mask.w;
+    for (let x = 0; x < mask.w; x++) out[to + x] = mask.data[from + x] * 255 + 0.5;
+  }
   return out;
 }
 
@@ -86,7 +126,8 @@ export function scaleAnalysis(analysis, s, previewW, previewH) {
       corr = { ...corr, w: cw, h: ch, data: d };
     }
   }
-  return { ...analysis, mask, corr };
+  const faces = analysis.faces.map((f) => f.map((v, k) => (k < 14 ? v * s : v)));  // the last value is the score
+  return { ...analysis, mask, corr, faces };
 }
 
 export const engine = () => state?.engine;

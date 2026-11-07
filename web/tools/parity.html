@@ -12,8 +12,8 @@ const params = await (await fetch('../test/ref/params.json')).json();
 const names = ['p_user', 'p_02709', 'p_00044', 'p_00078', 'p_group', 'p_dslr'];
 const engineWanted = new URLSearchParams(location.search).get('engine');
 if (engineWanted === 'wasm') { Object.defineProperty(navigator, 'gpu', { value: undefined }); }
-const st = await pipeline.init(log);
-log('engine: ' + st.engine);
+const st = await pipeline.init(log, { blemishEngine: params.blemish_engine });
+log('engine: ' + st.engine + ', blemish: ' + st.blemishEngine);
 const save = async (name, blob) => fetch('/__save/' + name, { method: 'POST', body: blob });
 const png = async (image) => { const c = new OffscreenCanvas(image.width, image.height); c.getContext('2d').putImageData(image, 0, 0); return c.convertToBlob({ type: 'image/png' }); };
 const results = {};
@@ -26,14 +26,28 @@ for (const n of names) {
   const healedOnly = pipeline.render(bgr, a, { blemish: params.blemish, strength: 0, texture: params.texture });
   const final = pipeline.render(bgr, a, params);
   const t2 = performance.now();
-  const full = new Float32Array(bgr.rows * bgr.cols);
-  for (let y = 0; y < a.mask.h; y++) full.set(a.mask.data.subarray(y * a.mask.w, (y + 1) * a.mask.w), (y + a.mask.y0) * bgr.cols + a.mask.x0);
-  await save(n + '.mask.f32', new Blob([full]));
+  const withPores = pipeline.render(bgr, a, { ...params, pores: params.pores_stage });
+  const t3 = performance.now();
+  const wholeMask = (m) => {
+    const full = new Float32Array(bgr.rows * bgr.cols);
+    for (let y = 0; y < m.h; y++) full.set(m.data.subarray(y * m.w, (y + 1) * m.w), (y + m.y0) * bgr.cols + m.x0);
+    return full;
+  };
+  await save(n + '.mask.f32', new Blob([wholeMask(a.mask)]));
+  const faceOnly = await pipeline.analyze(bgr, { faceOnly: true, previous: a });
+  await save(n + '.mask_face.f32', new Blob([wholeMask(faceOnly.mask)]));
+  const layer = pipeline.editLayer(bgr.cols, bgr.rows, params.brush_strokes);
+  const brushedAnalysis = pipeline.withEdits(a, layer, bgr.cols, bgr.rows);
+  await save(n + '.mask_brush.f32', new Blob([wholeMask(brushedAnalysis.mask)]));
+  const brushed = pipeline.render(bgr, brushedAnalysis, params);
+  await save(n + '.brush.png', await png(imageFromMat(st.cv, brushed)));
+  brushed.delete();
   await save(n + '.healed.png', await png(imageFromMat(st.cv, healedOnly)));
   await save(n + '.final.png', await png(imageFromMat(st.cv, final)));
-  results[n] = { faces: a.faces.length, healed: a.healed, analyzeMs: Math.round(t1 - t0), renderMs: Math.round(t2 - t1) };
+  await save(n + '.pores.png', await png(imageFromMat(st.cv, withPores)));
+  results[n] = { faces: a.faces.length, healed: a.healed, analyzeMs: Math.round(t1 - t0), renderMs: Math.round(t2 - t1), poresMs: Math.round(t3 - t2) };
   log(`${n}: ${JSON.stringify(results[n])}`);
-  bgr.delete(); healedOnly.delete(); final.delete();
+  bgr.delete(); healedOnly.delete(); final.delete(); withPores.delete();
 }
 window.parityDone = results;
 log('done');

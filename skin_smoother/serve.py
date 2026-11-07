@@ -14,27 +14,64 @@ import base64
 import json
 import os
 import socket
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import cv2
 import numpy as np
 
 import smoother
 import blemish
+import mask_edit
 import photo_io
 
-# The blemish network runs once per photo; slider moves reuse its correction.
-_blemish_cache: dict = {}
-_blemish_lock = threading.Lock()
+MASK_IMAGE_MAX = 1600     # longest side of the mask picture sent to the page for the brush
+
+# Reading a photo, finding its skin and its spots happen once per photo and Face only
+# setting: moving a slider or painting a stroke reuses them.
+_analysis_cache: dict = {}
+_analysis_lock = threading.Lock()
 
 
-def _blemish_correction(key: int, img: np.ndarray, faces):
-    with _blemish_lock:
-        if key not in _blemish_cache:
-            _blemish_cache.clear()
-            _blemish_cache[key] = blemish.correction(img, faces)
-        return _blemish_cache[key]
+def _analysed(image_url: str, face_only: bool):
+    """(img, info, faces, mask, corr, spot count) for an uploaded photo."""
+    key = (hash(image_url), face_only)
+    with _analysis_lock:
+        if key not in _analysis_cache:
+            _analysis_cache.clear()
+            img, info = photo_io.decode(_decode_data_url(image_url))
+            if img is None:
+                raise ValueError("could not decode image")
+            faces = smoother._detect_faces(img)
+            mask = smoother.build_skin_mask(img, faces=faces, face_only=face_only)
+            corr, count = blemish.correction(img, faces, mask) if blemish.have_model() else (None, 0)
+            _analysis_cache[key] = (img, info, faces, mask, corr, count)
+        return _analysis_cache[key]
+
+
+def _mask_image(mask: np.ndarray) -> str:
+    """A mask as a small greyscale PNG data URL."""
+    h, w = mask.shape[:2]
+    s = min(1.0, MASK_IMAGE_MAX / max(h, w))
+    if s < 1.0:
+        mask = cv2.resize(mask, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
+    ok, png = cv2.imencode(".png", np.clip(mask * 255.0 + 0.5, 0, 255).astype(np.uint8))
+    return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
+
+
+def _brush_script() -> bytes:
+    """The brush's script: bundled inside the .exe, or from the web app beside this folder."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [os.path.join(here, "..", "web", "js", "mask_brush.js")]
+    if getattr(sys, "frozen", False):
+        candidates.insert(0, os.path.join(sys._MEIPASS, "web", "mask_brush.js"))
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                return fh.read()
+    raise FileNotFoundError("mask_brush.js")
 
 
 PAGE ="""<!doctype html>
@@ -59,6 +96,7 @@ PAGE ="""<!doctype html>
   .controls { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin-left: auto; }
   .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 170px; }
   .ctl label { font-size: 12px; opacity: .75; display: flex; justify-content: space-between; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .75; cursor: pointer; }
   input[type=range] { width: 180px; accent-color: #4b7bec; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px;
            background: #4b7bec; color: #fff; cursor: pointer; }
@@ -91,12 +129,15 @@ PAGE ="""<!doctype html>
       <input id="strength" type="range" min="0" max="100" value="60">
     </div>
     <div class="ctl">
-      <label>Keep texture <span id="tval">35</span></label>
-      <input id="texture" type="range" min="0" max="100" value="35">
+      <label>Keep texture <span id="tval">60</span></label>
+      <input id="texture" type="range" min="0" max="100" value="60">
     </div>
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;">
-      <input id="gpu" type="checkbox" checked> Use GPU
-    </label>
+    <div class="ctl">
+      <label>Add pores <span id="pval">0</span></label>
+      <input id="pores" type="range" min="0" max="100" value="0">
+    </div>
+    <label class="check"><input id="faceonly" type="checkbox"> Face only</label>
+    <button id="editmask" class="secondary" disabled>Edit mask</button>
     <button id="download" disabled>Download</button>
     <button id="reset" class="secondary hidden">New image</button>
   </div>
@@ -118,11 +159,19 @@ PAGE ="""<!doctype html>
   </div>
 </main>
 
-<script>
+<script type="module">
+import { attachMaskBrush } from '/mask_brush.js';
+
 const $ = id => document.getElementById(id);
 let original = null;      // data URL of the source image
 let originalName = 'photo';
 let busy = false, pending = false;
+const brush = attachMaskBrush({
+  image: $('after'),
+  button: $('editmask'),
+  onChange: () => runProcess(),
+  onModeChange: (editing) => { if (editing) runProcess(); },
+});
 
 const modelNote = () => {};
 
@@ -142,6 +191,8 @@ function loadFile(f){
   r.onload = () => {
     original = r.result;
     originalName = f.name.replace(/\\.[^.]+$/, '') || 'photo';
+    brush.reset();
+    $('editmask').disabled = true;
     $('before').src = original;
     $('drop').classList.add('hidden');
     $('workspace').classList.remove('hidden');
@@ -153,21 +204,23 @@ function loadFile(f){
 
 $('reset').addEventListener('click', () => {
   original = null;
+  brush.reset();
   $('drop').classList.remove('hidden');
   $('workspace').classList.add('hidden');
   $('reset').classList.add('hidden');
   $('download').disabled = true;
+  $('editmask').disabled = true;
   $('file').value = '';
 });
 
-const valueLabel = {strength: 'sval', texture: 'tval', blemish: 'bval'};
-['strength','texture','blemish'].forEach(id => {
+const valueLabel = {strength: 'sval', texture: 'tval', pores: 'pval', blemish: 'bval'};
+['strength','texture','pores','blemish'].forEach(id => {
   $(id).addEventListener('input', () => {
     $(valueLabel[id]).textContent = $(id).value;
     process();
   });
 });
-$('gpu').addEventListener('change', process);
+$('faceonly').addEventListener('change', process);
 
 let debounce = null;
 function process(){
@@ -188,27 +241,34 @@ async function runProcess(){
         image: original,
         strength: +$('strength').value / 100,
         texture: +$('texture').value / 100,
+        pores: +$('pores').value / 100,
+        face_only: $('faceonly').checked,
         blemish: +$('blemish').value / 100,
-        gpu: $('gpu').checked
+        mask_strokes: brush.strokes,
+        want_mask: brush.editing
       })
     });
     const data = await res.json();
     if(data.error){ setStatus('Error: ' + data.error); }
     else {
       $('after').src = data.image;
+      if(data.mask_image){
+        const picture = new Image();
+        picture.onload = () => brush.setMaskImage(picture);
+        picture.src = data.mask_image;
+      }
       $('download').disabled = false;
+      $('editmask').disabled = false;
       $('download').onclick = () => {
         const a = document.createElement('a');
         a.href = data.image; a.download = originalName + '_retouched' + (data.ext || '.jpg'); a.click();
       };
-      if(!data.gpu_available){ $('gpu').checked = false; $('gpu').disabled = true; }
       if(!data.blemish_model){
         $('blemish').disabled = true; $('bval').textContent = 'model missing';
       }
       setStatus(data.faces + ' face(s) detected'
         + (data.model ? '' : ' — skin-tone mode (no face model installed)')
-        + (data.blemish_faces ? '  ·  blemishes healed on ' + data.blemish_faces + ' face(s)' : '')
-        + '  ·  ' + (data.gpu ? 'GPU (OpenCL)' : 'CPU')
+        + (data.blemish_text ? '  ·  ' + data.blemish_text : '')
         + '  ·  ' + data.w + '×' + data.h);
     }
   } catch(err){ setStatus('Error: ' + err); }
@@ -242,6 +302,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/mask_brush.js":
+            self._send(200, _brush_script(), "text/javascript; charset=utf-8")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -252,24 +314,30 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            img, info = photo_io.decode(_decode_data_url(payload["image"]))
-            if img is None:
-                raise ValueError("could not decode image")
             strength = float(payload.get("strength", 0.6))
-            texture = float(payload.get("texture", 0.35))
+            texture = float(payload.get("texture", 0.6))
+            pores = float(payload.get("pores", 0.0))
+            face_only = bool(payload.get("face_only", False))
             blemish_amt = float(payload.get("blemish", 0.0))
-            gpu_eff = smoother.set_opencl(bool(payload.get("gpu", False)))
 
-            mask = smoother.build_skin_mask(img)
-            faces = smoother._detect_faces(img)
+            img, info, faces, mask, corr, spots = _analysed(payload["image"], face_only)
             n_faces = 0 if faces is None else len(faces)
 
+            # The brush's strokes change the mask, and take protected areas out of the fills.
+            strokes = payload.get("mask_strokes") or []
+            if strokes:
+                layer = mask_edit.layer_from(strokes, img.shape[1], img.shape[0])
+                region = mask_edit.region_of(layer, img.shape[1], img.shape[0])
+                mask = mask_edit.apply_to_mask(mask, region)
+                corr = mask_edit.apply_to_correction(corr, region)
+
             # Heal blemishes first, then smooth (the usual retouching order).
-            healed, blemish_faces = img, 0
+            healed, blemish_count = img, 0
             if blemish_amt > 0 and blemish.have_model():
-                corr, blemish_faces = _blemish_correction(hash(payload["image"]), img, faces)
+                blemish_count = spots
                 healed = blemish.apply(img, corr, blemish_amt)
-            out = smoother.smooth_face(healed, strength=strength, texture=texture, mask=mask)
+            out = smoother.smooth_face(healed, strength=strength, texture=texture,
+                                       mask=mask, faces=faces, pores=pores)
 
             # Save like the original: same colour profile, EXIF, DPI and JPEG
             # quality, so colours and file size match what was uploaded.
@@ -282,11 +350,11 @@ class Handler(BaseHTTPRequestHandler):
                 "faces": n_faces,
                 "model": smoother.have_face_model(),
                 "blemish_model": blemish.have_model(),
-                "blemish_faces": blemish_faces,
-                "gpu": gpu_eff,
-                "gpu_available": smoother.opencl_available(),
+                "blemish_text": blemish.count_text(blemish_count) if blemish_count else "",
                 "w": img.shape[1], "h": img.shape[0],
             }
+            if payload.get("want_mask"):
+                resp["mask_image"] = _mask_image(mask)
             self._send(200, json.dumps(resp).encode("utf-8"), "application/json")
         except Exception as e:
             self._send(200, json.dumps({"error": str(e)}).encode("utf-8"),
@@ -311,7 +379,6 @@ def main():
     print("  Close this window to stop.")
     if not smoother.have_face_model():
         print("  (Tip: run get_model.py for face-aware masking.)")
-    print(f"  GPU (OpenCL): {'available' if smoother.opencl_available() else 'not available (CPU only)'}")
     print("=" * 48)
     if not os.environ.get("SKINSMOOTHER_NO_BROWSER"):
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()

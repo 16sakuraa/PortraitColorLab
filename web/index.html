@@ -26,6 +26,8 @@
   .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
   .ctl label { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
   input[type=range] { width: 170px; accent-color: var(--accent); }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .check input { accent-color: var(--accent); margin: 0; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--accent);
            color: var(--accent-text); cursor: pointer; }
   button.secondary { background: var(--secondary); }
@@ -84,9 +86,15 @@
       <input id="strength" type="range" min="0" max="100" value="60" disabled>
     </div>
     <div class="ctl">
-      <label for="texture">Keep texture <span id="tval">35</span></label>
-      <input id="texture" type="range" min="0" max="100" value="35" disabled>
+      <label for="texture">Keep texture <span id="tval">60</span></label>
+      <input id="texture" type="range" min="0" max="100" value="60" disabled>
     </div>
+    <div class="ctl">
+      <label for="pores">Add pores <span id="pval">0</span></label>
+      <input id="pores" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <label class="check"><input id="faceonly" type="checkbox" disabled> Face only</label>
+    <button id="editmask" class="secondary" disabled>Edit mask</button>
     <button id="download" disabled>Download</button>
     <button id="reset" class="secondary hidden">New photo</button>
   </div>
@@ -110,8 +118,8 @@
 </main>
 
 <footer>
-  Blemish model trained on <a href="https://github.com/skylab-tech/ffhqr-dataset">FFHQR</a> (CC BY-NC-SA 4.0) —
-  for non-commercial use. Face detection: YuNet (OpenCV Zoo).
+  Face detection: YuNet (OpenCV Zoo). Skin segmentation: Google MediaPipe selfie multiclass (Apache 2.0). The optional blemish network (<code>?blemish=network</code>) was trained on
+  <a href="https://github.com/skylab-tech/ffhqr-dataset">FFHQR</a> (CC BY-NC-SA 4.0), for non-commercial use.
 </footer>
 
 <script type="module" src="js/app.js"></script>
