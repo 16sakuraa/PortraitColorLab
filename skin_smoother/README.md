@@ -79,7 +79,7 @@ The brush for editing the mask isn't in this app: use the web UI for that.
 
 ## Share as a standalone app (no Python needed)
 
-Download **`SkinSmoother.exe`** (about 104 MB) from the
+Download **`SkinSmoother.exe`** (about 96 MB) from the
 [latest release](https://github.com/16sakuraa/PortraitColorLab/releases/latest)
 and give that one file to anyone. They just double-click it. It starts, waits a few
 seconds the first time, and opens the app in their browser. The models are bundled
