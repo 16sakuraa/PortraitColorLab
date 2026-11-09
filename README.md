@@ -33,11 +33,35 @@ a DSLR), camera data and print resolution.
   print then keeps as much texture as Keep texture asks for. It looks coarser on
   screen.
 - **Brush:** paint **Restore** to bring back the original, all of it or part
-  (Strength), for example around the eyes or on a mole, or **Add skin** to smooth
-  an area the automatic mask left out. In the web app and the `.exe`.
+  (Strength), for example on a mole; **Undo smoothing** to bring back the original's
+  sharpness, around the eyes, the nostrils or the jawline, while keeping the removed
+  spots and heals; or **Add skin** to smooth an area the automatic mask left out.
+  **Heal** covers a scar, cut or large spot
+  with skin copied from a clean area you Alt-click, matched to the light and
+  shading where you paint (seamless cloning). **Remove spot** fills a spot the
+  automatic removal missed from the skin around it, in one click. The **light
+  brush** paints a colour picked from the skin (Alt-click) over blotches, dark
+  circles and seams between light and shadow, changing only the tone so the skin's
+  grain stays (frequency-separation painting); **Nose line** paints the same way along
+  a line between two clicks, such as a highlight down the nose. **Smooth again**
+  smooths a painted area once more, at full strength with half the grain, for coarse
+  grain, blotches or stubble shadow that are left. In the web app and the `.exe`.
 
-The settings sit in a panel on the right of the window, grouped as Retouch, Photo
-and Brush; on a narrow screen they move above the photos.
+The settings sit in a panel on the right of the window, in three steps: **1 Skin**
+(Lighting, Print size, Face only, and the brush for the skin area), **2 Smooth** (the
+sliders, the light brush, Nose line and Smooth again) and **3 Finish** (Undo
+smoothing, Restore, Heal, Remove spot). Tabs and Back / Next move between them; everything is redone from the
+original, so going back to change a setting keeps all brush work. On a narrow screen
+the panel moves above the photos. Scroll on either photo of the before / after pair to
+zoom both into the same spot; drag to move around, double-click to see the whole photo.
+**History** at the bottom of the panel lists every change (sliders, settings, brush
+strokes); click one to go back to it, or use Undo / Redo (Ctrl+Z, Ctrl+Y). Closing or
+reloading the page with work that hasn't been downloaded asks first.
+
+Both the web app and the `.exe` are in **Thai and English**: the **TH | EN** switch at
+the top right changes every label, hint and message, and the browser remembers the
+choice. The first visit follows the browser's language. The words are in
+`web/js/i18n.js`, which both pages share.
 
 ## What's here
 

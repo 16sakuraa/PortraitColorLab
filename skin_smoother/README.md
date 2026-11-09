@@ -34,33 +34,99 @@ To start it manually instead:
 python serve.py
 ```
 
-The settings are in the panel on the right: **Retouch** (the sliders), **Photo**
-(Lighting, Print size, Face only) and **Brush**. New image and Download are at the
-top right.
+The settings are in the panel on the right, in three steps. Click a step's tab, or
+use Back and Next at the bottom of the panel:
+
+1. **Skin:** Lighting, Print size and Face only, and the brush for the skin area
+   (**Add skin**, **Remove skin**).
+2. **Smooth:** Remove blemishes, Strength, Keep texture, Reduce shine, Add pores, and
+   the **light brush**, **Nose line** and **Smooth again**.
+3. **Finish:** **Undo smoothing**, **Restore**, **Heal** and **Remove spot**.
+
+Everything is redone from the original photo each time, so you can go back to an
+earlier step and change a setting without losing any brush work. New photo and
+Download are at the top right; you can download at any step.
+
+To compare closely, scroll on either photo: both zoom into the same spot. Drag to move
+around, and double-click to see the whole photo again.
+
+**History** at the bottom of the panel lists every change since the photo was opened:
+each slider you let go, each setting, each brush stroke, and clearing the strokes.
+Click any of them to go back to the photo as it was then; **Undo** and **Redo**
+(Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z) step through the list one change at a time. After
+going back, a new change replaces the ones below it. The list starts again with each
+new photo.
+
+Closing the browser tab or reloading the page while a photo is open asks first
+("Leave site?"), so a retouch isn't lost by mistake. It doesn't ask when the photo as
+it is was just downloaded. Browsers only ask once you've clicked or typed on the page.
+
+The page is in Thai or English: press **TH** or **EN** at the top right. The choice is
+remembered for next time (the first time, it follows the browser's language). The
+words live in `web/js/i18n.js`, shared with the web app and bundled into the `.exe`.
 
 ### The brush
 
-Press **Use brush** in the panel. Skin that will be smoothed is tinted over the
-photo, and you paint on it:
+Press the brush button in the panel (its name changes with the step, for example
+**Paint the skin area**). Skin that will be smoothed is tinted over the photo, and you
+paint on it. The step tabs stay in view while you paint, and switching step switches
+the brush's tools:
 
-- **Restore** brings back the original: at 100% Strength the area is kept exactly as
-  it is (no smoothing, no blemish fills); lower Strength brings back part of it, for
-  example to sharpen up around the eyes or the nostrils again. Turn the tint off
-  (`M`) to see the result.
 - **Add skin** smooths an area the mask left out, such as skin inside an eye or lip
   protection zone. It doesn't look for blemishes there.
+- **Remove skin** (step 1) and **Restore** (step 3) are the same stroke: they bring
+  back the original. At 100% Strength the area is kept exactly as it is (no
+  smoothing, no blemish fills, no heals or light brush painted before it); lower
+  Strength brings back part of it. Turn the tint off (`M`) to see the result.
+- The **light brush** evens out light and shadow. Alt-click the skin whose colour you
+  want (or press **Pick colour** and click it), then paint over blotches, dark circles,
+  frown lines or the seam between light and shadow. Only the tone changes, so the
+  skin's grain stays. It starts at 20% Strength and a fully soft edge: build it up
+  gradually, and judge it from a distance.
+- **Nose line** paints the same way along a straight line. Alt-click the brightest
+  skin on the nose to pick the highlight colour (it's shared with the light brush),
+  then click at the top of the nose bridge and at its tip. Make the brush as wide as
+  the bridge. It starts at 25%. Esc cancels a line after its first click.
+- **Smooth again** smooths a painted area once more, at full strength and with half
+  the grain, so coarse grain, blotches or stubble shadow that are left become smooth
+  and only the finest grain stays. It works even where the mask left the skin out;
+  Strength says how much of it to use.
+- **Undo smoothing** brings back the original's sharpness and texture but keeps the
+  removed spots, heals and light brush: the last step of a retouch, to bring back
+  what smoothing softened around the eyes, the nostrils, the jawline under the chin,
+  or a mole. Strength works as for Restore.
+- **Heal** covers a scar, a cut or a large spot. Alt-click clean skin to copy from
+  (or press **Set source** and click it), then paint over the mark. The skin's
+  detail is copied and its light and shading are matched to the skin around the
+  stroke, so no seam shows. With **Aligned** on, the source keeps its distance from
+  the brush from one stroke to the next; with it off, every stroke copies from the
+  point you picked. Make the brush just cover the mark.
+- **Remove spot** fills a spot from the skin around it in one click, for one the
+  automatic blemish removal missed or a mole you want gone. It keeps the skin's fine
+  grain. Make the brush a little bigger than the spot.
 
-Where strokes cross, the later one wins: a 40% Restore over a 100% one leaves 40%.
-Scroll to zoom. Hold Space or the right mouse button to move around. Press **Done
-with brush** to go back.
+The step 2 and step 3 tools hide the tint while they're chosen. Heal and Remove spot
+are applied before smoothing, so the patch is smoothed like the skin around it; Smooth
+again after the smoothing, and the light brush and Nose line last. Each tool remembers
+its own Strength and Softness.
+
+Where strokes cross, the later one wins: a 40% Restore over a 100% one leaves 40%,
+a Restore stroke over a heal, the light brush or Smooth again takes that share of it
+back, Undo smoothing takes Smooth again back but keeps the light brush, and Undo
+smoothing over a Restore brings the blemish fills back. Scroll to zoom.
+Hold Space or the right mouse button to move around. Press **Done with brush** to go
+back.
 
 | Key | What it does |
 |---|---|
 | `[` and `]` | Brush size |
-| `X` | Switch between Restore and Add skin |
+| `X` | Go through the step's brush tools |
+| Alt+click | Heal: pick the skin to copy from. Light brush and Nose line: pick the colour |
+| Esc | Cancel a nose line after its first click |
 | `M` | Show or hide the tint |
 | `0` | Fit the whole photo |
-| Ctrl+Z | Undo the last stroke |
+| Ctrl+Z | Undo the last change (any change, not only strokes) |
+| Ctrl+Y or Ctrl+Shift+Z | Redo |
 
 Each stroke reprocesses the photo: about 1-2 s on a 20-megapixel file here, quicker
 in the web app, which updates a preview. Strokes apply to the full-size download and
@@ -93,7 +159,8 @@ python app.py
 - Compare the Original (left) and Smoothed (right) panes live.
 - **Save…** writes the full-resolution result.
 
-The brush for editing the mask isn't in this app: use the web UI for that.
+The steps and the brush (skin area, light brush, Nose line, Smooth again, Undo
+smoothing, Restore, Heal, Remove spot) aren't in this app: use the web UI for those.
 
 ## Share as a standalone app (no Python needed)
 

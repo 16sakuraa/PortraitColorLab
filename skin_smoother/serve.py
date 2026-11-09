@@ -24,6 +24,7 @@ import numpy as np
 
 import smoother
 import blemish
+import heal
 import mask_edit
 import photo_io
 import updater
@@ -63,17 +64,20 @@ def _mask_image(mask: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
 
 
-def _brush_script() -> bytes:
-    """The brush's script: bundled inside the .exe, or from the web app beside this folder."""
+WEB_SCRIPTS = ("mask_brush.js", "i18n.js", "compare_zoom.js", "history.js")   # the web app's scripts this page uses
+
+
+def _web_script(name: str) -> bytes:
+    """One of WEB_SCRIPTS: bundled inside the .exe, or from the web app beside this folder."""
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [os.path.join(here, "..", "web", "js", "mask_brush.js")]
+    candidates = [os.path.join(here, "..", "web", "js", name)]
     if getattr(sys, "frozen", False):
-        candidates.insert(0, os.path.join(sys._MEIPASS, "web", "mask_brush.js"))
+        candidates.insert(0, os.path.join(sys._MEIPASS, "web", name))
     for path in candidates:
         if os.path.exists(path):
             with open(path, "rb") as fh:
                 return fh.read()
-    raise FileNotFoundError("mask_brush.js")
+    raise FileNotFoundError(name)
 
 
 PAGE ="""<!doctype html>
@@ -115,9 +119,10 @@ PAGE ="""<!doctype html>
   .tools section { display: grid; gap: 12px; align-content: start; }
   .tools section + section { border-top: 1px solid #0000001a; padding-top: 16px; }
   .tools h2 { font-size: 13px; font-weight: 650; margin: 0; }
+  .tools .note { margin: 0; font-size: 12px; opacity: .7; }
   .tools button { justify-self: start; }
   /* While painting, the panel holds only the brush. */
-  body.mask-editing .tools > section:not(#brushbox) { display: none; }
+  body.mask-editing .tools > section:not(#brushbox):not(#historybox) { display: none; }
   body.mask-editing .tools > #brushbox { border-top: 0 !important; padding-top: 0; }
   @media (max-width: 900px) {
     .layout { grid-template-columns: 1fr; }
@@ -132,6 +137,8 @@ PAGE ="""<!doctype html>
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
               opacity: .6; margin: 4px 6px 10px; }
   .panel img { width: 100%; border-radius: 8px; display: block; }
+  .hint { font-size: 12px; opacity: .6; margin: 8px 2px 0; }
+  @media (hover: none) { .hint { display: none; } }
   .status { font-size: 13px; opacity: .8; margin-top: 10px; min-height: 18px; }
   .version { font-size: 12px; opacity: .55; }
   .update { padding: 9px 20px; background: #fff4cc; color: #4d3b00; font-size: 13px; }
@@ -144,9 +151,9 @@ PAGE ="""<!doctype html>
 <header>
   <h1>Skin Smoother</h1>
   <span class="version" id="version">version __VERSION__</span>
-  <div class="actions">
-    <button id="reset" class="secondary hidden">New image</button>
-    <button id="download" disabled>Download</button>
+  <div class="actions" id="actions">
+    <button id="reset" class="secondary hidden" data-i18n="page.newPhoto">New photo</button>
+    <button id="download" disabled data-i18n="page.download">Download</button>
   </div>
 </header>
 <div id="update" class="update hidden"></div>
@@ -154,100 +161,135 @@ PAGE ="""<!doctype html>
 <div class="layout">
 <main>
   <div id="drop" class="drop">
-    <p><strong>Click to choose a photo</strong> or drag it here</p>
-    <p style="opacity:.6;font-size:13px">JPG, PNG, BMP, WEBP — stays on your computer</p>
+    <p data-i18n-html="page.dropHtml"><strong>Click to choose a photo</strong> or drag it here</p>
+    <p style="opacity:.6;font-size:13px" data-i18n="page.dropNoteExe">JPG, PNG, BMP, WEBP — stays on your computer</p>
     <input id="file" type="file" accept="image/*" class="hidden">
   </div>
 
   <div id="workspace" class="hidden">
     <div class="grid">
-      <div class="panel"><h2>Original</h2><img id="before"></div>
-      <div class="panel"><h2>Smoothed</h2><img id="after"></div>
+      <div class="panel"><h2 data-i18n="page.original">Original</h2><img id="before"></div>
+      <div class="panel"><h2 data-i18n="page.retouched">Retouched</h2><img id="after"></div>
     </div>
+    <p class="hint" data-i18n="page.zoomHint">Scroll on either photo to zoom both into the same spot · drag to move around · double-click to see the whole photo</p>
     <div class="status" id="status"></div>
   </div>
 </main>
 
-<aside class="tools" aria-label="Retouch settings">
-  <section>
-    <h2>Retouch</h2>
+<aside class="tools" aria-label="Retouch settings" data-i18n-aria="page.settingsAria">
+  <section data-step="1">
+    <h2 data-i18n="panel.skinPhoto">Skin and photo</h2>
     <div class="ctl">
-      <label>Remove blemishes <span id="bval">100</span></label>
+      <label for="lighting" data-i18n="ctl.lighting">Lighting</label>
+      <select id="lighting" data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
+        <option value="soft" selected data-i18n="ctl.lightingSoft">Soft (studio)</option>
+        <option value="hard" data-i18n="ctl.lightingHard">Hard or patchy (flash)</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="print" data-i18n="ctl.print">Print size</label>
+      <select id="print" data-i18n-title="ctl.printTitle" title="A small print keeps coarser grain, so the skin still has texture at that size. It looks coarser here.">
+        <option value="large" selected data-i18n="ctl.printLarge">Large print or screen</option>
+        <option value="small" data-i18n="ctl.printSmall">Small print (1-inch ID)</option>
+      </select>
+    </div>
+    <label class="check"><input id="faceonly" type="checkbox"> <span data-i18n="ctl.faceOnly">Face only</span></label>
+    <p class="note" data-i18n="note.step1">Tinted skin is what gets smoothed. Paint the skin area to add skin the mask missed, or take out what shouldn't be smoothed.</p>
+  </section>
+  <section data-step="2">
+    <h2 data-i18n="panel.smoothing">Smoothing</h2>
+    <div class="ctl">
+      <label><span data-i18n="ctl.blemish">Remove blemishes</span> <span id="bval">100</span></label>
       <input id="blemish" type="range" min="0" max="100" value="100">
     </div>
     <div class="ctl">
-      <label>Strength <span id="sval">60</span></label>
+      <label><span data-i18n="ctl.strength">Strength</span> <span id="sval">60</span></label>
       <input id="strength" type="range" min="0" max="100" value="60">
     </div>
     <div class="ctl">
-      <label>Keep texture <span id="tval">60</span></label>
+      <label><span data-i18n="ctl.texture">Keep texture</span> <span id="tval">60</span></label>
       <input id="texture" type="range" min="0" max="100" value="60">
     </div>
     <div class="ctl">
-      <label title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone.">Reduce shine <span id="rval">0</span></label>
+      <label data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
       <input id="shine" type="range" min="0" max="100" value="0">
     </div>
     <div class="ctl">
-      <label>Add pores <span id="pval">0</span></label>
+      <label><span data-i18n="ctl.pores">Add pores</span> <span id="pval">0</span></label>
       <input id="pores" type="range" min="0" max="100" value="0">
     </div>
+    <p class="note" data-i18n="note.step2">The light brush evens out blotches, dark circles and seams between light and shadow with a colour you pick from the skin, Nose line paints a soft highlight down the nose, and Smooth again smooths leftover coarse grain or stubble shadow once more.</p>
   </section>
-  <section>
-    <h2>Photo</h2>
-    <div class="ctl">
-      <label for="lighting">Lighting</label>
-      <select id="lighting" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
-        <option value="soft" selected>Soft (studio)</option>
-        <option value="hard">Hard or patchy (flash)</option>
-      </select>
-    </div>
-    <div class="ctl">
-      <label for="print">Print size</label>
-      <select id="print" title="A small print keeps coarser grain, so the skin still has texture at that size. It looks coarser here.">
-        <option value="large" selected>Large print or screen</option>
-        <option value="small">Small print (1-inch ID)</option>
-      </select>
-    </div>
-    <label class="check"><input id="faceonly" type="checkbox"> Face only</label>
+  <section data-step="3">
+    <h2 data-i18n="panel.finishing">Finishing</h2>
+    <p class="note" data-i18n="note.step3">Bring back sharpness around the eyes, nostrils and jawline with Undo smoothing, cover scars with Heal, and click leftover spots away with Remove spot. Then press Download.</p>
   </section>
   <section id="brushbox">
-    <h2>Brush</h2>
+    <h2 data-i18n="panel.brush">Brush</h2>
     <button id="editmask" class="secondary" disabled>Use brush</button>
+  </section>
+  <section id="historybox">
+    <h2 data-i18n="panel.history">History</h2>
   </section>
 </aside>
 </div>
 
 <script type="module">
-import { attachMaskBrush } from '/mask_brush.js';
+import { attachMaskBrush, attachSteps } from '/mask_brush.js';
+import { t, translatePage, attachLangSwitch, onLangChange } from '/i18n.js';
+import { attachCompareZoom } from '/compare_zoom.js';
+import { attachHistory } from '/history.js';
 
 const $ = id => document.getElementById(id);
+// The page in the language last chosen (or the browser's), with a TH | EN switch.
+translatePage();
+attachLangSwitch($('actions'));
 let original = null;      // data URL of the source image
 let originalName = 'photo';
-let busy = false, pending = false;
+let busy = false, pending = false, modelMissing = false;
 const brush = attachMaskBrush({
   image: $('after'),
   button: $('editmask'),
   onChange: () => runProcess(),
   onModeChange: (editing) => { if (editing) runProcess(); },
   toolsHost: $('brushbox'),
-  labels: ['Use brush', 'Done with brush'],
+  labels: [t('brush.use'), t('brush.done')],
 });
+// The settings and brush tools in three steps, like DM Portrait's: Skin, Smooth, Finish.
+const steps = attachSteps({ panel: document.querySelector('.tools'), brush, navBefore: $('historybox') });
+// Every change listed, to go back to any of them, with Undo and Redo.
+const history = attachHistory({ host: $('historybox'), brush, render: () => runProcess() });
+// Scroll on either photo to zoom both into the same spot.
+const zoom = attachCompareZoom([$('before'), $('after')]);
 
-const modelNote = () => {};
-
-function setStatus(t){ $('status').textContent = t; }
+// text: a function giving the words, so a language switch can say it again.
+let lastStatus = null;
+function setStatus(text){ lastStatus = text; $('status').textContent = text(); }
 
 // The program checks for a newer version when it starts (updater.py); show what it finds.
+let update = { version: '__VERSION__', state: 'off' };
+function showUpdate(){
+  $('version').textContent = t('page.version', { v: update.version });
+  const key = { downloading: 'update.downloading', ready: 'update.ready', failed: 'update.failed' }[update.state];
+  const text = key && update.latest ? t(key, { v: update.latest, reason: update.reason || '' }) : (update.message || '');
+  $('update').textContent = text;
+  $('update').classList.toggle('hidden', !text);
+}
+showUpdate();
 async function watchUpdate(){
   try {
-    const u = await (await fetch('/update')).json();
-    $('version').textContent = 'version ' + u.version;
-    $('update').textContent = u.message || '';
-    $('update').classList.toggle('hidden', !u.message);
-    if (u.state === 'checking' || u.state === 'downloading') setTimeout(watchUpdate, 3000);
+    update = await (await fetch('/update')).json();
+    showUpdate();
+    if (update.state === 'checking' || update.state === 'downloading') setTimeout(watchUpdate, 3000);
   } catch(err) { /* the program has been closed */ }
 }
 watchUpdate();
+
+onLangChange(() => {
+  showUpdate();
+  if (lastStatus) setStatus(lastStatus);
+  if (modelMissing) $('bval').textContent = t('status.modelMissing');
+});
 
 $('drop').addEventListener('click', () => $('file').click());
 $('drop').addEventListener('dragover', e => { e.preventDefault(); $('drop').style.opacity=.7; });
@@ -258,14 +300,21 @@ $('drop').addEventListener('drop', e => {
 });
 $('file').addEventListener('change', e => { if(e.target.files[0]) loadFile(e.target.files[0]); });
 
+// Leaving a photo whose current state hasn't been downloaded asks first.
+const mayLeave = () => !original || !history.unsaved || confirm(t('confirm.newPhoto'));
+
 function loadFile(f){
+  if (!mayLeave()) return;
   const r = new FileReader();
   r.onload = () => {
     original = r.result;
     originalName = f.name.replace(/\\.[^.]+$/, '') || 'photo';
     brush.reset();
+    steps.setStep(1);
+    zoom.reset();
     $('editmask').disabled = true;
     $('before').src = original;
+    history.start();
     $('drop').classList.add('hidden');
     $('workspace').classList.remove('hidden');
     $('reset').classList.remove('hidden');
@@ -275,8 +324,12 @@ function loadFile(f){
 }
 
 $('reset').addEventListener('click', () => {
+  if (!mayLeave()) return;
   original = null;
   brush.reset();
+  history.clear();
+  steps.setStep(1);
+  zoom.reset();
   $('drop').classList.remove('hidden');
   $('workspace').classList.add('hidden');
   $('reset').classList.add('hidden');
@@ -303,10 +356,24 @@ function process(){
   debounce = setTimeout(runProcess, 180);
 }
 
+// The status line after a result: faces, spots removed, and the photo's size.
+function summary(data){
+  const parts = [(data.faces === 1 ? t('summary.faces1') : t('summary.faces', { n: data.faces }))
+                 + (data.model ? '' : t('status.noFaceModel'))];
+  if (data.blemish_count) {
+    const unit = data.blemish_unit === 'faces' ? 'summary.healed' : 'summary.spots';
+    parts.push(data.blemish_count === 1 ? t(unit + '1') : t(unit, { n: data.blemish_count }));
+  }
+  parts.push(data.w + '×' + data.h);
+  return parts.join('  ·  ');
+}
+
 async function runProcess(){
   if(!original) return;
   if(busy){ pending = true; return; }
-  busy = true; setStatus('Processing…'); $('download').disabled = true;
+  busy = true; setStatus(() => t('status.processing')); $('download').disabled = true;
+  const sent = brush.strokes, upTo = sent.length ? sent[sent.length - 1].id : 0;
+  const point = history.point;      // the History entry this result shows
   try {
     const res = await fetch('/process', {
       method: 'POST',
@@ -321,17 +388,17 @@ async function runProcess(){
         lighting: $('lighting').value,
         face_only: $('faceonly').checked,
         blemish: +$('blemish').value / 100,
-        mask_strokes: brush.strokes,
+        mask_strokes: sent,
         want_mask: brush.editing
       })
     });
     const data = await res.json();
-    if(data.error){ setStatus('Error: ' + data.error); }
+    if(data.error){ setStatus(() => t('status.error', { message: data.error })); }
     else {
       $('after').src = data.image;
       if(data.mask_image){
         const picture = new Image();
-        picture.onload = () => brush.setMaskImage(picture);
+        picture.onload = () => brush.setMaskImage(picture, upTo);
         picture.src = data.mask_image;
       }
       $('download').disabled = false;
@@ -339,16 +406,15 @@ async function runProcess(){
       $('download').onclick = () => {
         const a = document.createElement('a');
         a.href = data.image; a.download = originalName + '_retouched' + (data.ext || '.jpg'); a.click();
+        history.markSaved(point);       // closing the tab now loses nothing
       };
       if(!data.blemish_model){
-        $('blemish').disabled = true; $('bval').textContent = 'model missing';
+        modelMissing = true;
+        $('blemish').disabled = true; $('bval').textContent = t('status.modelMissing');
       }
-      setStatus(data.faces + ' face(s) detected'
-        + (data.model ? '' : ' — skin-tone mode (no face model installed)')
-        + (data.blemish_text ? '  ·  ' + data.blemish_text : '')
-        + '  ·  ' + data.w + '×' + data.h);
+      setStatus(() => summary(data));
     }
-  } catch(err){ setStatus('Error: ' + err); }
+  } catch(err){ setStatus(() => t('status.error', { message: String(err) })); }
   busy = false;
   if(pending){ pending = false; runProcess(); }
 }
@@ -379,8 +445,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, PAGE.replace("__VERSION__", VERSION).encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path == "/mask_brush.js":
-            self._send(200, _brush_script(), "text/javascript; charset=utf-8")
+        elif self.path.lstrip("/") in WEB_SCRIPTS:
+            self._send(200, _web_script(self.path.lstrip("/")), "text/javascript; charset=utf-8")
         elif self.path == "/update":
             self._send(200, json.dumps(updater.status()).encode("utf-8"), "application/json")
         else:
@@ -405,22 +471,29 @@ class Handler(BaseHTTPRequestHandler):
             img, info, faces, mask, corr, spots = _analysed(payload["image"], face_only)
             n_faces = 0 if faces is None else len(faces)
 
-            # The brush's strokes change the mask, and take protected areas out of the fills.
+            # The brush's strokes change the mask, and take restored areas out of the fills.
             strokes = payload.get("mask_strokes") or []
+            again = None
             if strokes:
-                layer = mask_edit.layer_from(strokes, img.shape[1], img.shape[0])
-                region = mask_edit.region_of(layer, img.shape[1], img.shape[0])
+                region, fills, again = mask_edit.edits(strokes, img.shape[1], img.shape[0])
                 mask = mask_edit.apply_to_mask(mask, region)
-                corr = mask_edit.apply_to_correction(corr, region)
+                corr = mask_edit.apply_to_correction(corr, fills)
 
-            # Heal blemishes first, then smooth (the usual retouching order).
+            # Heal blemishes first, then the healing brush's strokes, then smooth (the
+            # usual retouching order).
             healed, blemish_count = img, 0
             if blemish_amt > 0 and blemish.have_model():
                 blemish_count = spots
                 healed = blemish.apply(img, corr, blemish_amt)
+            healed = heal.apply(healed, strokes)
             out = smoother.smooth_face(healed, strength=strength, texture=texture,
                                        mask=mask, faces=faces, pores=pores, grain=grain, shine=shine,
                                        light=light)
+            # Smooth again: once more, with finer grain, where it was painted.
+            if again is not None:
+                out = smoother.smooth_again(healed, out, again, mask, faces, texture, pores, grain, shine, light)
+            # The light brush paints tone on the smoothed result, keeping the grain it kept.
+            out = heal.apply_light(out, strokes, smoother.detail_sigma(img.shape, faces, grain))
 
             # Save like the original: same colour profile, EXIF, DPI and JPEG
             # quality, so colours and file size match what was uploaded.
@@ -434,6 +507,9 @@ class Handler(BaseHTTPRequestHandler):
                 "model": smoother.have_face_model(),
                 "blemish_model": blemish.have_model(),
                 "blemish_text": blemish.count_text(blemish_count) if blemish_count else "",
+                # for the page to say in its own language: spots removed, or faces treated
+                "blemish_count": blemish_count,
+                "blemish_unit": "spots" if blemish.ENGINE == "classic" else "faces",
                 "w": img.shape[1], "h": img.shape[0],
             }
             if payload.get("want_mask"):

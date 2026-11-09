@@ -5,7 +5,8 @@ Pipeline:
   1. Detect the faces and build a soft skin mask: a segmentation model finds face
      and body skin (skin_segment.py), minus the eyes, eyebrows, lips and ears, which
      a landmark model outlines (face_landmarks.py). The mask can be edited by hand
-     with a brush (mask_edit.py).
+     with a brush (mask_edit.py); its Heal and Remove spot strokes change the photo
+     itself before smoothing (heal.py).
   2. Split the skin into a tone layer and a detail layer, using sizes relative
      to the face, so results don't depend on how the photo was cropped. For a
      small print the split is coarser, so the grain kept is grain that still
@@ -558,6 +559,7 @@ LEVEL_BAND_ROWS = 32
 # screen and right in the print.
 PRINT_GRAIN = {"large": 1.0, "small": 2.0}
 MAX_GRAIN = 2.5           # past this the split overtakes luma_radius and brightness is barely smoothed
+MIN_GRAIN = 0.25          # finer grain, for smoothing a painted area again (heal.py's Smooth again)
 # Lighting. Hard or patchy light (on-camera flash, a bare window) leaves mottled
 # light and shadow a few millimetres across; this many times the brightness
 # smoothing radius evens it out. The face's shading is still kept (contour), so
@@ -608,6 +610,40 @@ def _face_widths(faces, diag: float) -> np.ndarray:
     if faces is None or len(faces) == 0:
         return np.array([NO_FACE_WIDTH * diag], np.float64)
     return np.asarray(faces, np.float64)[:, 2]
+
+
+RESMOOTH_GRAIN = 0.5      # Smooth again keeps half the grain the rest of the skin keeps,
+RESMOOTH_STRENGTH = 1.0   # at full strength: grain alone changes little, strength does
+
+
+def smooth_again(bgr: np.ndarray, smoothed: np.ndarray, region, mask: np.ndarray, faces,
+                 texture: float, pores: float = 0.0, grain: float = 1.0,
+                 shine: float = 0.0, light: float = 1.0) -> np.ndarray:
+    """smoothed (smooth_face of bgr), with a Smooth again edit (mask_edit.edits: x0, y0,
+    float32 0..1) smoothed once more, at full strength and with finer grain, as far as
+    the edit goes: coarse grain, blotches or stubble shadow left by the first pass
+    become tone and are smoothed, while the finest grain stays as Keep texture says. It
+    also smooths where the mask left skin out. A new array."""
+    x0, y0, edit = region
+    eh, ew = edit.shape
+    fine_mask = np.zeros(mask.shape[:2], np.float32)
+    fine_mask[y0:y0 + eh, x0:x0 + ew] = np.maximum(mask[y0:y0 + eh, x0:x0 + ew], edit)
+    fine = smooth_face(bgr, RESMOOTH_STRENGTH, texture, fine_mask, faces, pores, grain * RESMOOTH_GRAIN, shine, light)
+    out = smoothed.copy()
+    here = out[y0:y0 + eh, x0:x0 + ew]
+    now = here.astype(np.float32)
+    mixed = now + edit[:, :, None] * (fine[y0:y0 + eh, x0:x0 + ew].astype(np.float32) - now) + np.float32(0.5)
+    here[:] = np.clip(mixed, 0, 255).astype(np.uint8)
+    return out
+
+
+def detail_sigma(shape, faces, grain: float = 1.0) -> float:
+    """The size (px) smooth_face splits tone from detail at, for a photo of this shape:
+    the grain it keeps. The light brush (heal.py) paints tone only, at the same size."""
+    h, w = shape[:2]
+    widths = _face_widths(faces, (h * h + w * w) ** 0.5)
+    grain = float(np.clip(grain, MIN_GRAIN, MAX_GRAIN))
+    return max(MIN_SPLIT_SIGMA, float(np.median(widths)) * TUNE["split"] * grain)
 
 
 def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
@@ -868,8 +904,8 @@ def smooth_face(
     mask     : optional precomputed float mask from build_skin_mask (for speed).
     faces    : optional YuNet rows from _detect_faces, in this image's pixels.
     pores    : 0..1  how much synthetic pore texture to add (0 = none).
-    grain    : 1..MAX_GRAIN  size of the grain kept and added, for the print size
-               (PRINT_GRAIN; 1 = large print or screen).
+    grain    : MIN_GRAIN..MAX_GRAIN  size of the grain kept and added, for the print size
+               (PRINT_GRAIN; 1 = large print or screen), or finer to smooth an area again.
     shine    : 0..1  how much more to remove of bright, colourless grain on the
                brighter skin: the glints on oily skin (0 = none).
     light    : 1..MAX_LIGHT  how far brightness is evened out, for the lighting
@@ -895,7 +931,7 @@ def smooth_face(
         return bgr.copy()
     texture = float(np.clip(texture, 0.0, 1.0))
     pores = float(np.clip(pores, 0.0, 1.0))
-    grain = float(np.clip(grain, 1.0, MAX_GRAIN))
+    grain = float(np.clip(grain, MIN_GRAIN, MAX_GRAIN))
     shine = float(np.clip(shine, 0.0, 1.0))
     light = float(np.clip(light, 1.0, MAX_LIGHT))
 

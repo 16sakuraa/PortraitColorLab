@@ -53,6 +53,9 @@ def main() -> int:
         page = _get(base + "/").decode("utf-8")
         assert "Skin Smoother" in page and "/mask_brush.js" in page and "__VERSION__" not in page, "the page"
         assert b"attachMaskBrush" in _get(base + "/mask_brush.js"), "the brush script"
+        assert b"attachLangSwitch" in _get(base + "/i18n.js"), "the brush's words, in English and Thai"
+        assert b"attachCompareZoom" in _get(base + "/compare_zoom.js"), "the comparison's zoom"
+        assert b"attachHistory" in _get(base + "/history.js"), "the History panel"
         update = json.loads(_get(base + "/update"))
         assert update["state"] == "off", update
         if want:

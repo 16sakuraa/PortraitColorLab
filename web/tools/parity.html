@@ -45,6 +45,11 @@ for (const n of names) {
   const brushed = pipeline.render(bgr, brushedAnalysis, params);
   await save(n + '.brush.png', await png(imageFromMat(st.cv, brushed)));
   brushed.delete();
+  const healLayer = pipeline.editLayer(bgr.cols, bgr.rows, params.heal_strokes);
+  const healAnalysis = pipeline.withEdits(a, healLayer, bgr.cols, bgr.rows);
+  const healedBrush = pipeline.render(bgr, healAnalysis, { ...params, strokes: params.heal_strokes });
+  await save(n + '.heal.png', await png(imageFromMat(st.cv, healedBrush)));
+  healedBrush.delete();
   await save(n + '.healed.png', await png(imageFromMat(st.cv, healedOnly)));
   await save(n + '.final.png', await png(imageFromMat(st.cv, final)));
   await save(n + '.pores.png', await png(imageFromMat(st.cv, withPores)));

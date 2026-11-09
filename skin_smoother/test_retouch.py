@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import smoother  # noqa: E402
 import blemish  # noqa: E402
 import blemish_classic  # noqa: E402
+import heal  # noqa: E402
 import mask_edit  # noqa: E402
 import skin_segment  # noqa: E402
 import face_landmarks  # noqa: E402
@@ -273,8 +274,9 @@ def test_large_print_is_the_default():
     plain = smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5)
     large = smoother.PRINT_GRAIN["large"]
     assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=large), plain)
-    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=0.3), plain), \
-        "grain below 1 counts as 1"
+    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=0.1),
+                          smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=smoother.MIN_GRAIN)), \
+        "grain below MIN_GRAIN (used by Smooth again) counts as MIN_GRAIN"
 
 
 def test_small_print_keeps_the_grain_the_print_shows():
@@ -481,6 +483,42 @@ def test_add_skin_leaves_the_correction_alone():
     assert (out == 8.0).all()
 
 
+def fills_kept(strokes, w=400, h=300) -> float:
+    """How much of a spot fill stays in the middle of the photo under these strokes."""
+    corr = (0, 0, np.ones((h, w, 3), np.float32))
+    _, fills = mask_edit.regions(strokes, w, h)
+    return float(mask_edit.apply_to_correction(corr, fills)[2][h // 2, w // 2, 0])
+
+
+def test_undo_smoothing_clears_the_mask_but_keeps_the_fixes():
+    restore, unsmooth = stroke("protect", 0.5, 0.5), stroke("unsmooth", 0.5, 0.5)
+    assert np.array_equal(edited_mask([unsmooth], base=1.0), edited_mask([restore], base=1.0)), "on the mask it's Restore"
+    assert fills_kept([restore]) < 0.02 and fills_kept([unsmooth]) == 1.0, "but the spot fills stay"
+    part = {**unsmooth, "amount": 0.4}
+    assert abs(edited_mask([part], base=1.0)[150, 200] - 0.6) < 0.01 and fills_kept([part]) == 1.0, "at 40% too"
+
+
+def test_undo_smoothing_and_restore_follow_the_later_stroke():
+    restore, unsmooth = stroke("protect", 0.5, 0.5), stroke("unsmooth", 0.5, 0.5)
+    assert fills_kept([restore, unsmooth]) > 0.98, "Undo smoothing over a Restore brings the fills back"
+    assert fills_kept([restore, {**unsmooth, "amount": 0.4}]) > 0.98, "at any strength: it says keep the fixes"
+    assert fills_kept([unsmooth, restore]) < 0.02, "a Restore over it takes them out again"
+    assert fills_kept([unsmooth, stroke("skin", 0.5, 0.5)]) == 1.0
+
+
+def test_without_undo_smoothing_the_fills_follow_the_mask_edit():
+    strokes = [stroke("protect", 0.3, 0.4, 0.7, 0.6, soft=0.5), stroke("skin", 0.5, 0.2, 0.5, 0.8, soft=0.3)]
+    assert mask_edit.layers_from(strokes, 400, 300)[1] is None
+    region, fills = mask_edit.regions(strokes, 400, 300)
+    assert fills is region, "one edit, as before Undo smoothing existed"
+
+
+def test_a_heal_stays_under_undo_smoothing():
+    _, scar, _ = scarred()
+    over = stroke("unsmooth", 0.375, 0.5, 0.5, 0.517, 0.625, 0.533, size=60 / 800)
+    assert np.array_equal(heal.apply(scar, [heal_stroke(), over]), heal.apply(scar, [heal_stroke()]))
+
+
 def test_a_stroke_off_the_edge_of_the_photo_is_safe():
     assert edited_mask([stroke("skin", 0.0, 0.0, 1.0, 1.0, size=0.1, soft=0.5)]).shape == (300, 400)
     assert edited_mask([stroke("skin", 0.999, 0.999)])[299, 399] > 0.5
@@ -502,6 +540,215 @@ def test_brushed_skin_gets_smoothed_and_protected_skin_does_not():
     assert grain(out, 200, 180) < 0.7 * grain(img, 200, 180), "the added patch is smoothed"
     assert abs(grain(out, 500, 450) - grain(img, 500, 450)) < 0.2, "the protected patch isn't"
     assert grain(out, 380, 350) < 0.7 * grain(img, 380, 350), "the rest of the mask still is"
+
+
+def scarred(h: int = 600, w: int = 800):
+    """Shaded, grainy skin; the same with a flat dark scar across it; and where the scar is.
+    Larger sizes show the same skin, with finer grain."""
+    rng = np.random.default_rng(3)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    tone = 150 + 40 * (xx / w) + 10 * np.sin(yy / h * 6.67) + rng.normal(0, 6, (h, w))
+    skin = np.clip(np.dstack([tone * 0.72, tone * 0.83, tone]), 0, 255).astype(np.uint8)
+    scar = skin.copy()
+    line = np.zeros((h, w), np.uint8)
+    for a, colour in ((scar, (60, 70, 90)), (line, 255)):
+        cv2.line(a, (round(0.375 * w), h // 2), (round(0.625 * w), round(0.533 * h)), colour, max(1, round(w * 14 / 800)))
+    return skin, scar, line > 0
+
+
+def heal_stroke(size=30 / 800, soft=0.3, offset=(-0.25, 0.25), **more):
+    return {"mode": "heal", "size": size, "soft": soft, "points": [0.375, 0.5, 0.5, 0.517, 0.625, 0.533],
+            "offset": list(offset), **more}
+
+
+def grey(a):
+    return cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+
+def test_heal_and_spot_strokes_leave_the_mask_alone():
+    image_strokes = [heal_stroke(), {"mode": "spot", "size": 0.05, "soft": 0.3, "points": [0.5, 0.5]}]
+    assert mask_edit.region_of(mask_edit.layer_from(image_strokes, 400, 300), 400, 300) is None
+    protect = [stroke("protect", 0.3, 0.3, size=0.1)]
+    assert np.array_equal(mask_edit.layer_from(protect + image_strokes, 400, 300),
+                          mask_edit.layer_from(protect, 400, 300)), "and don't count as Restore"
+
+
+def test_without_heal_strokes_the_photo_is_left_alone():
+    img = skin_photo()
+    assert heal.apply(img, []) is img and heal.apply(img, None) is img
+    assert heal.apply(img, [stroke("protect", 0.5, 0.5), stroke("skin", 0.2, 0.2)]) is img
+
+
+def test_heal_copies_the_detail_and_matches_the_tone_around_it():
+    skin, scar, inside = scarred()
+    out = heal.apply(scar, [heal_stroke()])
+    assert abs(grey(out)[inside].mean() - grey(skin)[inside].mean()) < 3, "the scar takes the tone around it"
+    fine = lambda a: (grey(a) - cv2.GaussianBlur(grey(a), (0, 0), 3))[inside].std()
+    assert abs(fine(out) - fine(skin)) < 0.15 * fine(skin), "and the source's grain"
+    assert out[50, 50].tolist() == scar[50, 50].tolist(), "away from the stroke nothing changes"
+    assert (scar[inside] == (60, 70, 90)).all(), "the input is left as it was"
+
+
+def test_heal_at_part_strength_and_from_right_here():
+    _, scar, inside = scarred()
+    full = heal.apply(scar, [heal_stroke()]).astype(np.float32) - scar
+    half = heal.apply(scar, [heal_stroke(amount=0.5)]).astype(np.float32) - scar
+    assert abs(half[inside].mean() / full[inside].mean() - 0.5) < 0.02
+    assert np.array_equal(heal.apply(scar, [heal_stroke(offset=(0, 0))]), scar), "no source, no change"
+
+
+def test_restore_after_a_heal_takes_it_out_and_before_it_does_not():
+    _, scar, inside = scarred()
+    healed = heal.apply(scar, [heal_stroke()])
+    restore = stroke("protect", 0.375, 0.5, 0.5, 0.517, 0.625, 0.533, size=60 / 800)
+    assert np.array_equal(heal.apply(scar, [restore, heal_stroke()]), healed), "a later heal wins"
+    assert np.array_equal(heal.apply(scar, [heal_stroke(), restore]), scar), "a later full Restore wins"
+    part = heal.apply(scar, [heal_stroke(), {**restore, "amount": 0.4}]).astype(np.float32) - scar
+    full = healed.astype(np.float32) - scar
+    assert abs(part[inside].mean() / full[inside].mean() - 0.6) < 0.02, "40% Restore leaves 60% of the heal"
+    skin_after = heal.apply(scar, [heal_stroke(), stroke("skin", 0.5, 0.5, size=0.2)])
+    assert np.array_equal(skin_after, healed), "Add skin doesn't touch it"
+
+
+def test_heals_land_in_the_same_place_at_any_size():
+    _, small_scar, inside = scarred(600, 800)
+    _, large_scar, _ = scarred(2400, 3200)
+    small = heal.apply(small_scar, [heal_stroke()])
+    large = heal.apply(large_scar, [heal_stroke()])     # a brush past the working grid's size
+    shrunk = cv2.resize(large, (800, 600), interpolation=cv2.INTER_AREA)
+    assert abs(grey(shrunk)[inside].mean() - grey(small)[inside].mean()) < 3, "one edit, on a preview and an export"
+    assert grey(shrunk)[inside].mean() > 130, "the scar is gone at both sizes"
+
+
+def test_a_heal_scribbled_over_a_broad_area_still_matches_the_tone():
+    skin, scar, _ = scarred()
+    zigzag = [v for i in range(9) for v in (0.3 + 0.05 * i, 0.35 if i % 2 else 0.65)]
+    broad = {"mode": "heal", "size": 0.06, "soft": 0.2, "points": zigzag, "offset": [0.0, 0.3]}
+    out = heal.apply(scar, [broad])
+    middle = (slice(270, 330), slice(330, 470))       # far from the edge of all the strokes
+    assert abs(grey(out)[middle].mean() - grey(skin)[middle].mean()) < 6
+    assert grey(out)[middle].std() < 2 * grey(skin)[middle].std(), "no blotches where nothing outside is near"
+
+
+def test_a_heal_reading_off_the_edge_of_the_photo_is_safe():
+    _, scar, _ = scarred()
+    corner = {"mode": "heal", "size": 0.1, "soft": 0.5, "points": [0.01, 0.01, 0.99, 0.99], "offset": [-0.9, 0.9]}
+    out = heal.apply(scar, [corner, {**corner, "mode": "spot"}, stroke("protect", 1.0, 1.0)])
+    assert out.shape == scar.shape and out.dtype == np.uint8
+
+
+def test_spot_fills_a_mark_from_the_skin_around_it():
+    skin, _, _ = scarred()
+    spot = skin.copy()
+    cv2.circle(spot, (400, 300), 8, (70, 80, 110), -1)
+    inside = np.zeros(spot.shape[:2], np.uint8)
+    cv2.circle(inside, (400, 300), 8, 255, -1)
+    inside = inside > 0
+    out = heal.apply(spot, [{"mode": "spot", "size": 24 / 800, "soft": 0.3, "points": [0.5, 0.5]}])
+    assert abs(grey(out)[inside].mean() - grey(skin)[inside].mean()) < 4, "the spot takes the tone around it"
+    ring = np.zeros(spot.shape[:2], np.uint8)
+    cv2.circle(ring, (400, 300), 40, 255, -1)
+    ring = (ring > 0) & ~inside
+    assert np.abs(grey(out)[ring] - grey(spot)[ring]).mean() < 2, "the skin around it hardly changes"
+
+
+def light_stroke(*points, pick=(0.8, 0.2), size=0.1, soft=0.3, **more):
+    return {"mode": "light", "size": size, "soft": soft, "points": list(points), "pick": list(pick), **more}
+
+
+def test_without_light_strokes_the_photo_is_left_alone():
+    img = skin_photo()
+    assert heal.apply_light(img, [], 3.0) is img and heal.apply_light(img, None, 3.0) is img
+    assert heal.apply_light(img, [heal_stroke(), stroke("protect", 0.5, 0.5)], 3.0) is img
+
+
+def test_light_paints_the_picked_tone_and_keeps_the_grain():
+    skin, _, _ = scarred()
+    patch = (slice(260, 340), slice(260, 340))              # well inside the stroke
+    picked = grey(skin)[110:130, 630:650].mean()            # around the pick at (0.8, 0.2)
+    fine = lambda a: (grey(a) - cv2.GaussianBlur(grey(a), (0, 0), 2))[patch].std()
+    full = heal.apply_light(skin, [light_stroke(0.375, 0.5, size=0.2)], 3.0)
+    assert abs(grey(full)[patch].mean() - picked) < 3, "the stroke takes the picked tone"
+    assert abs(fine(full) - fine(skin)) < 0.1 * fine(skin), "and keeps the grain"
+    part = heal.apply_light(skin, [light_stroke(0.375, 0.5, size=0.2, amount=0.2)], 3.0)
+    moved = (grey(part)[patch].mean() - grey(skin)[patch].mean()) / (grey(full)[patch].mean() - grey(skin)[patch].mean())
+    assert abs(moved - 0.2) < 0.03, "20% Strength goes a fifth of the way"
+    assert full[20, 20].tolist() == skin[20, 20].tolist(), "away from the stroke nothing changes"
+
+
+def test_light_paint_follows_the_later_stroke():
+    skin, _, _ = scarred()
+    light = light_stroke(0.375, 0.5)
+    painted = heal.apply_light(skin, [light], 3.0)
+    restore = stroke("protect", 0.375, 0.5, size=0.2)
+    assert np.array_equal(heal.apply_light(skin, [light, restore], 3.0), skin), "a later Restore takes it back"
+    assert np.array_equal(heal.apply_light(skin, [restore, light], 3.0), painted), "an earlier one doesn't limit it"
+    kept = [light, stroke("unsmooth", 0.375, 0.5, size=0.2), stroke("skin", 0.375, 0.5, size=0.2)]
+    assert np.array_equal(heal.apply_light(skin, kept, 3.0), painted), "Undo smoothing and Add skin keep it"
+
+
+def test_light_and_heal_strokes_stay_in_their_own_pass():
+    _, scar, _ = scarred()
+    light = light_stroke(0.375, 0.5)
+    assert heal.apply(scar, [light]) is scar, "the heal pass doesn't paint light"
+    assert np.array_equal(heal.apply(scar, [heal_stroke(), light]), heal.apply(scar, [heal_stroke()])), \
+        "and light strokes aren't Restore to it"
+    assert heal.apply_light(scar, [heal_stroke()], 3.0) is scar
+    assert mask_edit.region_of(mask_edit.layer_from([light], 800, 600), 800, 600) is None, "nor to the mask"
+    assert np.array_equal(heal.apply_light(scar, [{**light, "pick": None}], 3.0), scar), "no pick, no paint"
+
+
+def test_the_light_brush_keeps_the_grain_smoothing_keeps():
+    one = smoother.detail_sigma((900, 1000), FACE, 1.0)
+    assert one == max(smoother.MIN_SPLIT_SIGMA, 400 * smoother.TUNE["split"])
+    assert abs(smoother.detail_sigma((900, 1000), FACE, 2.0) - 2 * one) < 1e-9, "Print size coarsens it"
+
+
+def again_at_middle(strokes, w=400, h=300) -> float:
+    """How much Smooth again these strokes leave in the middle of the photo."""
+    again = mask_edit.edits(strokes, w, h)[2]
+    if again is None:
+        return 0.0
+    x0, y0, edit = again
+    return float(edit[h // 2 - y0, w // 2 - x0])
+
+
+def test_smooth_again_has_its_own_layer_and_follows_the_later_stroke():
+    again = stroke("resmooth", 0.5, 0.5)
+    assert mask_edit.edits([stroke("protect", 0.2, 0.2)], 400, 300)[2] is None, "none without its strokes"
+    assert mask_edit.region_of(mask_edit.layer_from([again], 400, 300), 400, 300) is None, "not on the mask"
+    assert mask_edit.layers_from([again], 400, 300)[1] is None, "nor the fills"
+    assert again_at_middle([again]) > 0.98
+    assert abs(again_at_middle([{**again, "amount": 0.4}]) - 0.4) < 0.01
+    assert again_at_middle([again, stroke("protect", 0.5, 0.5)]) < 0.02, "a later Restore takes it back"
+    assert again_at_middle([again, stroke("unsmooth", 0.5, 0.5)]) < 0.02, "and Undo smoothing"
+    assert again_at_middle([stroke("protect", 0.5, 0.5), again]) > 0.98, "an earlier one doesn't limit it"
+    assert again_at_middle([again, stroke("skin", 0.5, 0.5)]) > 0.98, "Add skin leaves it"
+    _, scar, _ = scarred()
+    assert np.array_equal(heal.apply(scar, [heal_stroke(), again]), heal.apply(scar, [heal_stroke()])), \
+        "and it isn't Restore to heals"
+
+
+def test_smooth_again_smooths_coarse_grain_and_keeps_the_finest():
+    rng = np.random.default_rng(5)
+    h, w = 900, 1000
+    coarse = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 2.0) * 25
+    fine = rng.normal(0, 3, (h, w)).astype(np.float32)
+    tone = 165 + coarse + fine
+    img = np.clip(np.dstack([tone * 0.72, tone * 0.83, tone]), 0, 255).astype(np.uint8)
+    mask = oval_mask()
+    smoothed = smoother.smooth_face(img, 0.6, 0.6, mask, FACE)
+    edit = np.ones((200, 200), np.float32)
+    again = smoother.smooth_again(img, smoothed, (400, 350, edit), mask, FACE, 0.6)
+    band = lambda a: (cv2.GaussianBlur(grey(a), (0, 0), 1.2) - cv2.GaussianBlur(grey(a), (0, 0), 4))[400:500, 450:550].std()
+    finest = lambda a: (grey(a) - cv2.GaussianBlur(grey(a), (0, 0), 0.8))[400:500, 450:550].std()
+    assert band(again) < 0.7 * band(smoothed), "coarse grain is smoothed more"
+    assert finest(again) > 0.7 * finest(smoothed), "the finest grain stays"
+    assert np.array_equal(again[:300], smoothed[:300]), "nothing changes away from the edit"
+    half = smoother.smooth_again(img, smoothed, (400, 350, edit * 0.5), mask, FACE, 0.6)
+    assert band(again) < band(half) < band(smoothed), "Strength blends it in"
+    outside = smoother.smooth_again(img, img.copy(), (0, 0, np.ones((150, 150), np.float32)), mask, FACE, 0.6)
+    assert not np.array_equal(outside[:150, :150], img[:150, :150]), "it smooths where the mask left skin out too"
 
 
 def face_row(x, y, w, h, score=0.9) -> list[float]:
@@ -1244,6 +1491,46 @@ def test_the_updater_is_off_from_source_and_when_switched_off():
             os.environ.pop("SKINSMOOTHER_NO_UPDATE", None)
         else:
             os.environ["SKINSMOOTHER_NO_UPDATE"] = had_switch
+
+
+def i18n_strings():
+    """The keys and words of web/js/i18n.js: {"en": {key: text}, "th": {...}}."""
+    import re
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "js", "i18n.js"),
+                  encoding="utf-8").read()
+    en, th = source.split("\n  th: {", 1)
+    pairs = lambda part: dict(re.findall(r"^\s*'([\w.]+)':\s*'((?:[^'\\]|\\.)*)',", part, re.M))
+    return {"en": pairs(en.split("\n  en: {", 1)[1]), "th": pairs(th.split("\n};", 1)[0])}
+
+
+def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
+    import re
+    import serve
+    words = i18n_strings()
+    en, th = words["en"], words["th"]
+    assert len(en) > 120, "the English table was read"
+    assert set(th) <= set(en), sorted(set(th) - set(en))
+    assert set(en) - set(th) == {"lang.th", "lang.en"}, sorted(set(en) - set(th) - {"lang.th", "lang.en"})
+    fills = lambda text: sorted(re.findall(r"\{(\w+)\}", text))
+    assert all(fills(en[k]) == fills(th[k]) for k in th), [k for k in th if fills(en[k]) != fills(th[k])]
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
+    read = lambda *path: open(os.path.join(root, *path), encoding="utf-8").read()
+    pages = read("index.html") + serve.PAGE
+    scripts = read("js", "app.js") + read("js", "mask_brush.js") + read("js", "history.js") + serve.PAGE
+    used = set(re.findall(r'data-i18n(?:-html|-title|-alt|-aria)?="([\w.]+)"', pages))
+    used |= set(re.findall(r"\bt\('([\w.]+)'", scripts))
+    for m in ("protect", "unsmooth", "skin", "heal", "spot", "light", "line", "resmooth", "removeSkin"):
+        used |= {f"mode.{m}.{field}" for field in ("label", "title", "strength", "hint")}
+    for m in ("heal", "light", "line"):
+        used |= {f"mode.{m}.{field}" for field in ("point", "pointTitle", "noPoint")}
+    used |= {"mode.line.next"} | {f"step{n}.{f}" for n in (1, 2, 3) for f in ("title", "button", "about")}
+    used |= {"engine.gpu", "engine.cpu", "summary.spots", "summary.spots1", "summary.healed", "summary.healed1"}
+    used |= {f"progress.{p}" for p in ("tools", "models", "reading", "finding", "mask", "full", "saving")}
+    used |= {"update.downloading", "update.ready", "update.failed"}
+    assert len(used) > 120 and used <= set(en), sorted(used - set(en))
+    assert b"attachLangSwitch" in serve._web_script("i18n.js"), "the desktop app serves the words too"
+    for name, export in (("compare_zoom.js", b"attachCompareZoom"), ("history.js", b"attachHistory")):
+        assert export in serve._web_script(name), f"and {name}"
 
 
 if __name__ == "__main__":

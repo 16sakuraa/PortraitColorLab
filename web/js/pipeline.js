@@ -10,8 +10,9 @@ import * as blemishClassic from './blemish_classic.js';
 import { buildSkinMask } from './skinmask.js';
 import { segment, skinArea } from './skin_segment.js';
 import { landmarks, zones, earZones } from './face_landmarks.js';
-import { smoothFace, PRINT_GRAIN, LIGHTING } from './smooth.js';
+import { smoothFace, smoothAgain, detailSigma, PRINT_GRAIN, LIGHTING } from './smooth.js';
 import * as maskEdit from './mask_edit.js';
+import * as heal from './heal.js';
 
 const LIB = new URL('../lib/', import.meta.url).href;
 const MODELS = new URL('../models/', import.meta.url).href;
@@ -24,9 +25,9 @@ let state = null;
 // whose model is non-commercial only).
 export async function init(onProgress = () => {}, { blemishEngine = 'classic' } = {}) {
   if (state) return state;
-  onProgress('Loading image tools…');
+  onProgress('Loading image tools…', 'progress.tools');
   const cv = await loadCv(LIB + 'opencv/opencv.js');
-  onProgress('Loading face models…');
+  onProgress('Loading face models…', 'progress.models');
   const ort = await import(LIB + 'ort/ort.webgpu.min.mjs');
   ort.env.wasm.wasmPaths = LIB + 'ort/';
   let engine = 'wasm';
@@ -76,16 +77,30 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
 }
 
 // params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1, shine: 0..1 (optional),
-// print: 'large' | 'small', lighting: 'soft' | 'hard' }. The parity tool passes grain and
-// light (numbers) instead of print and lighting.
+// print: 'large' | 'small', lighting: 'soft' | 'hard', strokes (optional, the brush's) }.
+// The parity tool passes grain and light (numbers) instead of print and lighting.
+// The analysis already holds the strokes' mask edits (withEdits); the heal and spot
+// strokes are painted here, after the spot fills and before smoothing, Smooth again
+// after the smoothing, and the light strokes last.
 export function render(bgr, analysis, params) {
   const { cv } = state;
-  const healed = blemish.apply(cv, bgr, analysis.corr, params.blemish);
+  const filled = blemish.apply(cv, bgr, analysis.corr, params.blemish);
+  const healed = heal.apply(cv, filled, params.strokes);
+  if (healed !== filled) filled.delete();
   const grain = params.grain ?? PRINT_GRAIN[params.print] ?? 1;
   const light = params.light ?? LIGHTING[params.lighting] ?? 1;
-  const out = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces,
+  let smoothed = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces,
     params.pores, grain, params.shine ?? 0, light);
+  if (analysis.again) {
+    const again = smoothAgain(cv, healed, smoothed, analysis.again, analysis.mask, analysis.faces, params.texture,
+      params.pores, grain, params.shine ?? 0, light);
+    smoothed.delete();
+    smoothed = again;
+  }
   healed.delete();
+  // The light brush paints tone on the smoothed result, keeping the grain it kept.
+  const out = heal.applyLight(cv, smoothed, params.strokes, detailSigma(bgr.rows, bgr.cols, analysis.faces, grain));
+  if (out !== smoothed) smoothed.delete();
   return out;
 }
 
@@ -96,11 +111,18 @@ export function editLayer(w, h, strokes, previous = null) {
 }
 
 // An analysis with the brush's edits applied, for an image of this size.
+// The spot fills follow their own layer once there's an Undo smoothing stroke, and
+// Smooth again its own (again: null without one).
 export function withEdits(analysis, layer, w, h) {
   if (!layer || !layer.strokes.length) return analysis;
   const region = maskEdit.regionOf(state.cv, layer, w, h);
-  if (!region) return analysis;
-  return { ...analysis, mask: maskEdit.applyToMask(analysis.mask, region), corr: maskEdit.applyToCorrection(analysis.corr, region) };
+  const fills = layer.fills ? maskEdit.regionOf(state.cv, { ...layer, data: layer.fills }, w, h) : region;
+  const again = layer.again ? maskEdit.regionOf(state.cv, { ...layer, data: layer.again }, w, h) : null;
+  if (!region && !fills && !again) return analysis;
+  return {
+    ...analysis, mask: maskEdit.applyToMask(analysis.mask, region),
+    corr: maskEdit.applyToCorrection(analysis.corr, fills), again,
+  };
 }
 
 // A mask as one byte per pixel of an image this size, for drawing it over the photo.

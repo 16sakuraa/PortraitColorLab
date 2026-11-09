@@ -1,9 +1,10 @@
 // Background worker: all image work happens here so the page stays responsive.
 //
 // Messages in:  init {blemishEngine} | open {file} | render {id, params} | export {params}
-// Messages out: progress {text} | ready {engine} | opened {...} | analysed {healed, healedUnit}
-//               | rendered {id, blob, maskBytes?, maskW?, maskH?} | exported {blob, ext} | error {message}
-// params may hold strokes (see mask_edit.js) and wantMask (send the mask back too).
+// Messages out: progress {text, key} | ready {engine} | opened {...} | analysed {healed, healedUnit}
+//               | rendered {id, blob, maskBytes?, maskW?, maskH?, upTo?} | exported {blob, ext} | error {message}
+// params may hold strokes (see mask_edit.js and heal.js) and wantMask (send the mask back
+// too, with upTo: the id of the last stroke in this result).
 
 import * as pipeline from './pipeline.js';
 import { matFromImage, imageFromMat } from './cv.js';
@@ -14,7 +15,7 @@ let st = null;
 let photo = null;   // { full, meta, analysis, preview, previewAnalysis, scale, faceOnly, layer }
 
 const post = (msg, transfer) => self.postMessage(msg, transfer || []);
-const progress = (text) => post({ type: 'progress', text });
+const progress = (text, key) => post({ type: 'progress', text, key });   // key: its words in i18n.js
 
 function release() {
   if (!photo) return;
@@ -25,10 +26,10 @@ function release() {
 
 async function open(file) {
   release();
-  progress('Reading photo…');
+  progress('Reading photo…', 'progress.reading');
   const { image, meta } = await decode(file);
   const full = matFromImage(st.cv, image);
-  progress('Finding faces, skin and blemishes…');
+  progress('Finding faces, skin and blemishes…', 'progress.finding');
   const t0 = performance.now();
   const analysis = await pipeline.analyze(full);
   const s = Math.min(1, PREVIEW_MAX / Math.max(full.cols, full.rows));
@@ -54,7 +55,7 @@ async function open(file) {
 async function useFaceOnly(faceOnly) {
   if (photo.faceOnly === faceOnly) return;
   photo.faceOnly = faceOnly;
-  progress('Updating the skin mask…');
+  progress('Updating the skin mask…', 'progress.mask');
   photo.analysis = await pipeline.analyze(photo.full, { faceOnly, previous: photo.analysis });
   photo.previewAnalysis = photo.scale < 1
     ? pipeline.scaleAnalysis(photo.analysis, photo.scale, photo.preview.cols, photo.preview.rows) : photo.analysis;
@@ -75,9 +76,10 @@ async function render(id, params) {
   const out = pipeline.render(preview, analysis, params);
   const blob = await encodePreview(imageFromMat(st.cv, out), photo.meta);
   out.delete();
+  const strokes = params.strokes || [], upTo = strokes.length ? strokes[strokes.length - 1].id : 0;
   if (params.wantMask) {
     const maskBytes = pipeline.maskBytes(analysis.mask, preview.cols, preview.rows);
-    post({ type: 'rendered', id, blob, maskBytes, maskW: preview.cols, maskH: preview.rows }, [maskBytes.buffer]);
+    post({ type: 'rendered', id, blob, maskBytes, maskW: preview.cols, maskH: preview.rows, upTo }, [maskBytes.buffer]);
   } else {
     post({ type: 'rendered', id, blob });
   }
@@ -86,12 +88,12 @@ async function render(id, params) {
 async function exportFull(params) {
   if (!photo) return;
   await useFaceOnly(params.faceOnly);
-  progress('Processing full resolution…');
+  progress('Processing full resolution…', 'progress.full');
   const analysis = edited(photo.analysis, params, photo.full.cols, photo.full.rows);
   const out = pipeline.render(photo.full, analysis, params);
   const image = imageFromMat(st.cv, out);
   out.delete();
-  progress('Saving…');
+  progress('Saving…', 'progress.saving');
   const { blob, ext } = await encode(image, photo.meta);
   post({ type: 'exported', blob, ext });
 }

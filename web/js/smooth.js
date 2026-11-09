@@ -56,6 +56,7 @@ const LUMA_B = 0.114, LUMA_G = 0.587, LUMA_R = 0.299;
 // detail finer than about one printed pixel disappears in it.
 export const PRINT_GRAIN = { large: 1.0, small: 2.0 };
 export const MAX_GRAIN = 2.5;
+export const MIN_GRAIN = 0.25;   // finer grain, for smoothing a painted area again (heal.js's Smooth again)
 // Lighting (smoother.LIGHTING): hard or patchy light leaves mottled light and
 // shadow, evened out by a wider brightness radius; shading is still kept.
 export const LIGHTING = { soft: 1.0, hard: 2.0 };
@@ -121,6 +122,13 @@ export function softBlur(cv, a, sigma) {
 }
 
 export const faceWidths = (faces, diag) => (faces && faces.length ? faces.map((f) => f[2]) : [NO_FACE_WIDTH * diag]);
+
+// The size (px) smoothFace splits tone from detail at, for a photo this size: the grain
+// it keeps. The light brush (heal.js) paints tone only, at the same size.
+export function detailSigma(rows, cols, faces, grain = 1) {
+  grain = Math.min(Math.max(grain, MIN_GRAIN), MAX_GRAIN);
+  return Math.max(MIN_SPLIT_SIGMA, medianOf(faceWidths(faces, Math.hypot(rows, cols))) * TUNE.split * grain);
+}
 
 export function medianOf(values) {
   const a = [...values].sort((x, y) => x - y), mid = a.length >> 1;
@@ -472,7 +480,7 @@ function nearEdge(cv, roi, y0, y1, radius, lo, hi) {
 // faces: YuNet rows in this image's pixels; pores: 0..1, synthetic pore texture
 // (scaled to the detail measured on this photo, sized to the face, brightness
 // only, and following the smoothing: through the mask, in proportion to strength,
-// not on anything left alone); grain: 1..MAX_GRAIN, size of the grain kept and
+// not on anything left alone); grain: MIN_GRAIN..MAX_GRAIN, size of the grain kept and
 // added, for the print size (PRINT_GRAIN; 1 = large print or screen); shine: 0..1,
 // how much more to remove of bright, colourless grain on the brighter skin (the
 // glints on oily skin; dark pores, freckles and coloured marks are untouched);
@@ -483,7 +491,7 @@ export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0, g
   if (strength <= 0) return copyMat(cv, bgr);
   texture = clamp01(texture);
   pores = clamp01(pores);
-  grain = Math.min(Math.max(grain, 1), MAX_GRAIN);
+  grain = Math.min(Math.max(grain, MIN_GRAIN), MAX_GRAIN);
   shine = clamp01(shine);
   light = Math.min(Math.max(light, 1), MAX_LIGHT);
   const H = bgr.rows, W = bgr.cols, diag = Math.hypot(H, W);
@@ -603,5 +611,39 @@ export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0, g
     }
   }
   roi.delete(); tone.delete();
+  return out;
+}
+
+export const RESMOOTH_GRAIN = 0.5;      // Smooth again keeps half the grain the rest of the skin keeps,
+export const RESMOOTH_STRENGTH = 1.0;   // at full strength: grain alone changes little, strength does
+
+// smoothed (smoothFace of bgr), with a Smooth again edit (withEdits' again: { x0, y0, w,
+// h, data } in 0..1) smoothed once more, at full strength and with finer grain, as far
+// as the edit goes: coarse grain, blotches or stubble shadow left by the first pass
+// become tone and are smoothed, while the finest grain stays as Keep texture says. It
+// also smooths where the mask left skin out. A new Mat (smoother.smooth_again).
+export function smoothAgain(cv, bgr, smoothed, region, mask, faces, texture, pores = 0, grain = 1, shine = 0, light = 1) {
+  const { x0, y0, w, h } = region, edit = region.data, data = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const my = y + y0 - mask.y0;
+    for (let x = 0; x < w; x++) {
+      const mx = x + x0 - mask.x0;
+      const m = my >= 0 && my < mask.h && mx >= 0 && mx < mask.w ? mask.data[my * mask.w + mx] : 0;
+      data[y * w + x] = Math.max(m, edit[y * w + x]);
+    }
+  }
+  const fine = smoothFace(cv, bgr, RESMOOTH_STRENGTH, texture, { x0, y0, w, h, data }, faces, pores,
+    grain * RESMOOTH_GRAIN, shine, light);
+  const out = copyMat(cv, smoothed), d = out.data, fd = fine.data, W = bgr.cols, f = Math.fround, half = f(0.5);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const e = edit[y * w + x];
+      for (let k = 0, i = 3 * ((y + y0) * W + x + x0); k < 3; k++, i++) {
+        const now = d[i], v = f(f(now + f(e * f(fd[i] - now))) + half);
+        d[i] = v <= 0 ? 0 : v >= 255 ? 255 : Math.trunc(v);
+      }
+    }
+  }
+  fine.delete();
   return out;
 }

@@ -40,7 +40,7 @@ TIMEOUT = 20          # seconds without an answer before giving up
 RETRY_FOR = 10.0      # seconds to keep retrying a rename, e.g. while an antivirus scans the new file
 
 _lock = threading.Lock()
-_status = {"version": VERSION, "state": "off", "latest": None, "message": ""}
+_status = {"version": VERSION, "state": "off", "latest": None, "message": "", "reason": ""}
 
 
 class UpdateError(Exception):
@@ -48,9 +48,10 @@ class UpdateError(Exception):
 
 
 def status() -> dict:
-    """{version, state, latest, message}. state: off, checking, current, offline,
+    """{version, state, latest, message, reason}. state: off, checking, current, offline,
     downloading, ready or failed. message is for showing, and empty when there's
-    nothing to say."""
+    nothing to say; reason is why a failed update failed (the page words the rest
+    itself, in its own language)."""
     with _lock:
         return dict(_status)
 
@@ -170,7 +171,7 @@ def _swap(exe: str, new: str) -> None:
 def run(exe: str, url: str = LATEST_URL) -> dict:
     """Check once, and install a newer release over exe. Never raises."""
     test = url.startswith(TEST_PREFIX)
-    _set(state="checking", latest=None, message="")
+    _set(state="checking", latest=None, message="", reason="")
     try:
         with _request(url) as r:
             release = json.loads(r.read(2_000_000).decode("utf-8"))
@@ -209,7 +210,7 @@ def run(exe: str, url: str = LATEST_URL) -> dict:
                      "window and open the program again.")
         return status()
     _remove(new)
-    _set(state="failed", latest=shown,
+    _set(state="failed", latest=shown, reason=reason,
          message=f"Couldn't update to version {shown}: {reason}. It will try again next time.")
     return status()
 
