@@ -20,7 +20,8 @@ no external service, nothing taken from the original program.
    coarser grain, the kind that still shows in a 1-inch ID photo.
 5. Blends the result back through the soft mask.
 
-Everything runs on your computer's CPU, with no GPU or service.
+Everything runs on your computer's CPU, with no GPU or service. What AI does here (it
+only finds faces and skin) and what it doesn't is in the main README, "AI in this app".
 
 ## Quick start (web UI)
 
@@ -210,7 +211,8 @@ pre-release that no copy picks up, for trying the build first.
 ### Building it yourself
 
 Double-click **`build_exe.bat`**. It installs the pinned packages and writes
-**`dist\SkinSmoother.exe`**. Check no Skin Smoother is running first.
+**`dist\SkinSmoother.exe`**. Check no Skin Smoother is running first. Its icon is
+`icon.ico`, drawn by `make_icon.py` (run it again after changing the design).
 
 ## Command line (batch)
 

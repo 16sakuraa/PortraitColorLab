@@ -128,6 +128,7 @@ PAGE ="""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skin Smoother</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x2='0' y2='1'><stop offset='0' stop-color='%236a95f7'/><stop offset='1' stop-color='%233b63d6'/></linearGradient></defs><rect x='3' y='3' width='94' height='94' rx='22' fill='url(%23g)'/><g fill='%23fff'><circle cx='45' cy='38.5' r='15.5'/><path d='M15 83a30 24 0 0 1 60 0z'/></g><path fill='%23ffe79e' d='M77.5 11Q79.1 22.9 91 24.5Q79.1 26.1 77.5 38Q75.9 26.1 64 24.5Q75.9 22.9 77.5 11z'/></svg>">
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }

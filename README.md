@@ -10,6 +10,58 @@ Photos are never uploaded: all processing happens on the visitor's own
 computer. The results keep the original's colour profile (e.g. Adobe RGB from
 a DSLR), camera data and print resolution.
 
+## How to use
+
+1. **Open it.** Use the [web app](https://16sakuraa.github.io/PortraitColorLab/) in a
+   current desktop browser, or on Windows download **SkinSmoother.exe** from the
+   [latest release](https://github.com/16sakuraa/PortraitColorLab/releases/latest) and
+   double-click it. The `.exe` opens the same page in your browser; keep its console
+   window open while you work. The first time, Windows may say "Windows protected your
+   PC" because the file isn't code-signed: click **More info**, then **Run anyway**.
+2. **Drop in a photo**, a JPEG or PNG. The app finds the faces and the skin by itself.
+3. **Go through the three steps** in the panel on the right: **1 Skin**, **2 Smooth**,
+   **3 Finish**. The sliders do most of the work; the brushes fix what the automatic
+   pass gets wrong or misses.
+4. **Check before you save.** Scroll on either photo to zoom the before / after pair,
+   and look at the eyes, hairline, glasses, ears and jaw, where the automatic skin area
+   is most likely to be off.
+5. **Download.** You get a new file, `<name>_retouched.jpg`; the original is never
+   changed.
+
+For official ID or passport photos, check the issuing office's rules: many don't accept
+photos edited to change how someone looks. Removing passing marks and evening out the
+skin is usually the most they allow.
+
+## AI in this app
+
+- **AI finds, it doesn't paint.** Three small neural networks run on your own computer,
+  only to find things: the YuNet face detector finds the faces, Google's MediaPipe selfie
+  segmentation tells skin from hair, clothes and background, and Google's Face Mesh V2
+  outlines the eyes, brows and lips so smoothing leaves them alone.
+- **The retouch itself is ordinary image processing.** Blemish removal, smoothing,
+  Reduce shine, Lighting and every brush only blend and move pixels of the same photo;
+  Add pores adds a fixed, computed grain pattern. There is no generative AI: nothing is
+  made up, the shape of the face and its features stay as they are, and the same photo
+  with the same settings gives the same result each time. The app can't remove a beard,
+  change hair or reshape a face.
+- **Your photos stay with you.** The models are inside the `.exe`, or downloaded once by
+  the web page and cached. Photos are never uploaded and never used to train anything.
+  The `.exe`'s only request over the internet is its update check, which asks GitHub for
+  the list of releases.
+- **The models can be wrong.** The skin area can take in a strand of hair or miss skin
+  behind glasses or in deep shadow, and Google reports lower accuracy on the darkest
+  skin tones. Check the result and correct it with the brush (**Add skin**,
+  **Remove skin**, **Restore**).
+- **One exception, off by default:** an optional network, trained on the FFHQR dataset,
+  can do the blemish removal instead, and that one does paint its own fix. It only runs
+  if you switch it on, and its licence doesn't allow paid work (see [Licence](#licence)).
+- **Built with AI help.** The code was written with an AI coding assistant, Anthropic's
+  Claude in Claude Code, under the maintainer's direction; every commit made that way
+  says so in a `Co-Authored-By` line. The unit checks (`skin_smoother/test_retouch.py`)
+  and the web / desktop comparison (`web/tools/parity.py`) test what it wrote.
+
+Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
+
 ## What it does
 
 - **Skin mask:** a segmentation model finds face and body skin, and leaves out

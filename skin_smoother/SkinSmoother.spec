@@ -30,6 +30,7 @@ exe = EXE(
     a.datas,
     [],
     name='SkinSmoother',
+    icon='icon.ico',          # drawn by make_icon.py
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
