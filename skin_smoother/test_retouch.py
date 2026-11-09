@@ -1533,6 +1533,62 @@ def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
         assert export in serve._web_script(name), f"and {name}"
 
 
+def test_the_desktop_preview_scales_the_analysis_without_finding_anything_again():
+    import serve
+    img = np.full((2400, 3200, 3), 128, np.uint8)
+    faces = FACE.copy()
+    mask = np.ones((2400, 3200), np.float32)
+    corr = (3100, 2300, np.full((100, 100, 3), 8.0, np.float32))    # reaching the photo's corner
+    full = (img, None, faces, mask, corr, 3)
+    small, info, f, m, c, count = serve.scaled_analysis(full, 1600)
+    assert small.shape == (1200, 1600, 3) and m.shape == (1200, 1600) and count == 3
+    assert np.allclose(f[0, :4], [150, 100, 200, 250]) and f[0, 14] == np.float32(0.9), "positions scaled, score kept"
+    assert np.array_equal(faces, FACE), "the full-size faces are left as they were"
+    x0, y0, fills = c
+    assert x0 + fills.shape[1] <= 1600 and y0 + fills.shape[0] <= 1200, "the fills fit the preview"
+    assert abs(float(fills.mean()) - 8.0) < 1e-3
+    assert blemish.apply(small, c, 1.0)[1190, 1590, 0] == 136, "and apply to it"
+    assert serve.scaled_analysis(full, 4000) is full, "a photo already that small is used as it is"
+
+
+def test_the_desktop_page_previews_while_editing_and_downloads_full_size():
+    import base64
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    import serve
+    ok, png = cv2.imencode(".png", skin_photo(1200, 2000))
+    image = "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def process(**extra):
+        body = json.dumps({"image": image, "strength": 0.6, "texture": 0.6, "blemish": 1.0, **extra}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/process", body,
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            result = json.loads(r.read())
+        assert "error" not in result, result.get("error")
+        return result
+
+    picture = lambda url: cv2.imdecode(np.frombuffer(base64.b64decode(url.split(",", 1)[1]), np.uint8),
+                                       cv2.IMREAD_COLOR)
+    try:
+        edit = process(preview=True, want_mask=True, want_before=True)
+        assert edit["image"].startswith("data:image/jpeg") and picture(edit["image"]).shape == (960, 1600, 3)
+        assert picture(edit["before_image"]).shape == (960, 1600, 3), "the Original at the same size"
+        assert (edit["w"], edit["h"]) == (2000, 1200), "the status line gives the photo's own size"
+        assert "mask_image" in edit
+        assert "before_image" not in process(preview=True), "only when asked for"
+        download = process()
+        assert download["image"].startswith("data:image/png") and picture(download["image"]).shape == (1200, 2000, 3)
+        assert "before_image" not in download and download["ext"] == ".png", "a PNG stays a PNG"
+    finally:
+        server.shutdown()
+        server.server_close()
+        serve._analysis_cache.clear()
+
+
 if __name__ == "__main__":
     tests =[(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")]
     failed = 0

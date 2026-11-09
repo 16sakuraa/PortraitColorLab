@@ -3,8 +3,10 @@ Local web UI for the skin smoother.
 
 Starts a small web server (Python standard library only) and opens a browser
 page where you can upload a photo, adjust Strength / Keep-texture, compare
-before and after, and download the result. Full-resolution processing happens
-on the server; nothing leaves your computer.
+before and after, and download the result. While you edit, the page shows a
+preview-size copy (PREVIEW_MAX), so every slider move and brush stroke comes back
+quickly; Download processes the full-resolution photo. All of it happens on this
+computer; nothing leaves it.
 
 Run:  python serve.py   (or double-click run.bat)
 """
@@ -31,6 +33,9 @@ import updater
 from version import VERSION
 
 MASK_IMAGE_MAX = 1600     # longest side of the mask picture sent to the page for the brush
+# Longest side of the picture worked on while editing, as in the web app (worker.js):
+# about 8 times fewer pixels than a DSLR photo, so a stroke takes a fraction of the time.
+PREVIEW_MAX = 1600
 
 # Reading a photo, finding its skin and its spots happen once per photo and Face only
 # setting: moving a slider or painting a stroke reuses them.
@@ -38,8 +43,11 @@ _analysis_cache: dict = {}
 _analysis_lock = threading.Lock()
 
 
-def _analysed(image_url: str, face_only: bool):
-    """(img, info, faces, mask, corr, spot count) for an uploaded photo."""
+def _analysed(image_url: str, face_only: bool, preview: bool = False):
+    """(img, info, faces, mask, corr, spot count) for an uploaded photo. With preview,
+    the photo scaled down to PREVIEW_MAX with its analysis to match (scaled_analysis):
+    the faces, skin and spots are still found on the full-size photo, as the web app
+    does, so the preview shows what the download will."""
     key = (hash(image_url), face_only)
     with _analysis_lock:
         if key not in _analysis_cache:
@@ -51,7 +59,41 @@ def _analysed(image_url: str, face_only: bool):
             mask = smoother.build_skin_mask(img, faces=faces, face_only=face_only)
             corr, count = blemish.correction(img, faces, mask) if blemish.have_model() else (None, 0)
             _analysis_cache[key] = (img, info, faces, mask, corr, count)
-        return _analysis_cache[key]
+        if not preview:
+            return _analysis_cache[key]
+        if (key, "preview") not in _analysis_cache:
+            _analysis_cache[(key, "preview")] = scaled_analysis(_analysis_cache[key], PREVIEW_MAX)
+        return _analysis_cache[(key, "preview")]
+
+
+def scaled_analysis(analysed, longest: int):
+    """_analysed's (img, info, faces, mask, corr, spot count) for the photo scaled down to
+    at most `longest` pixels on its long side, without finding anything again: the
+    photo, mask and spot fills shrunk (INTER_AREA), the face rows' positions scaled and
+    their scores kept. The fills are cut to the smaller photo. Like scaleAnalysis in the
+    web app's pipeline.js. The same tuple when the photo is already that small."""
+    img, info, faces, mask, corr, count = analysed
+    h, w = img.shape[:2]
+    s = min(1.0, longest / max(h, w))
+    if s >= 1.0:
+        return analysed
+    pw, ph = max(1, round(w * s)), max(1, round(h * s))
+    small = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+    mask = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_AREA)
+    if faces is not None:
+        faces = np.array(faces, np.float32)
+        faces[:, :14] *= s                  # box and landmarks; the last value is the score
+    if corr is not None:
+        x0, y0, values = corr
+        fills = cv2.resize(values, (max(1, round(values.shape[1] * s)), max(1, round(values.shape[0] * s))),
+                           interpolation=cv2.INTER_AREA)
+        x0, y0 = min(pw - 1, round(x0 * s)), min(ph - 1, round(y0 * s))
+        corr = x0, y0, fills[:ph - y0, :pw - x0]
+    return small, info, faces, mask, corr, count
+
+
+def _picture(data: bytes, mime: str) -> str:
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
 
 
 def _mask_image(mask: np.ndarray) -> str:
@@ -140,6 +182,16 @@ PAGE ="""<!doctype html>
   .hint { font-size: 12px; opacity: .6; margin: 8px 2px 0; }
   @media (hover: none) { .hint { display: none; } }
   .status { font-size: 13px; opacity: .8; margin-top: 10px; min-height: 18px; }
+  .busy::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; border-radius: 50%;
+                 border: 2px solid currentColor; border-top-color: transparent; animation: spin .8s linear infinite;
+                 vertical-align: -1px; }
+  /* A new photo on its way: shown dimmed under a spinner, never the last photo's retouch. */
+  .loading { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 12px; padding: 16px; text-align: center; font-size: 14px;
+             background: #000000a0; color: #fff; }
+  .loading::before { content: ""; width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff;
+                     border-top-color: transparent; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .version { font-size: 12px; opacity: .55; }
   .update { padding: 9px 20px; background: #fff4cc; color: #4d3b00; font-size: 13px; }
   @media (prefers-color-scheme: dark) { .update { background: #3d3415; color: #f3e3a6; } }
@@ -246,7 +298,8 @@ translatePage();
 attachLangSwitch($('actions'));
 let original = null;      // data URL of the source image
 let originalName = 'photo';
-let busy = false, pending = false, modelMissing = false;
+let busy = false, pending = false, pendingFull = false, modelMissing = false;
+let needBefore = false;   // the Original at preview size, asked for once per photo
 const brush = attachMaskBrush({
   image: $('after'),
   button: $('editmask'),
@@ -262,9 +315,23 @@ const history = attachHistory({ host: $('historybox'), brush, render: () => runP
 // Scroll on either photo to zoom both into the same spot.
 const zoom = attachCompareZoom([$('before'), $('after')]);
 
+// While a new photo's first result is on its way, the Retouched side shows that photo
+// dimmed under a spinner and these words (an i18n key), not the last photo's retouch.
+const loading = Object.assign(document.createElement('div'), { className: 'loading hidden' });
+$('after').closest('.mask-clip').append(loading);
+function setLoading(key){
+  loading.classList.toggle('hidden', !key);
+  if(key){ loading.dataset.i18n = key; loading.textContent = t(key); }
+}
+
 // text: a function giving the words, so a language switch can say it again.
+// spinning: a spinner after them, for the longer waits.
 let lastStatus = null;
-function setStatus(text){ lastStatus = text; $('status').textContent = text(); }
+function setStatus(text, spinning = false){
+  lastStatus = { text, spinning };
+  $('status').textContent = text();
+  $('status').classList.toggle('busy', spinning);
+}
 
 // The program checks for a newer version when it starts (updater.py); show what it finds.
 let update = { version: '__VERSION__', state: 'off' };
@@ -287,7 +354,7 @@ watchUpdate();
 
 onLangChange(() => {
   showUpdate();
-  if (lastStatus) setStatus(lastStatus);
+  if (lastStatus) setStatus(lastStatus.text, lastStatus.spinning);
   if (modelMissing) $('bval').textContent = t('status.modelMissing');
 });
 
@@ -308,12 +375,16 @@ function loadFile(f){
   const r = new FileReader();
   r.onload = () => {
     original = r.result;
+    needBefore = true;
     originalName = f.name.replace(/\\.[^.]+$/, '') || 'photo';
     brush.reset();
     steps.setStep(1);
     zoom.reset();
     $('editmask').disabled = true;
     $('before').src = original;
+    $('after').src = original;          // under the loading cover until its retouch arrives
+    setLoading('progress.finding');
+    setStatus(() => t('progress.finding'), true);
     history.start();
     $('drop').classList.add('hidden');
     $('workspace').classList.remove('hidden');
@@ -326,6 +397,7 @@ function loadFile(f){
 $('reset').addEventListener('click', () => {
   if (!mayLeave()) return;
   original = null;
+  setLoading(null);
   brush.reset();
   history.clear();
   steps.setStep(1);
@@ -368,18 +440,31 @@ function summary(data){
   return parts.join('  ·  ');
 }
 
-async function runProcess(){
+// While editing, the photo is worked on at preview size (the server's PREVIEW_MAX), so
+// each slider move and stroke comes back quickly. Download (full) processes the whole
+// photo and saves it.
+async function runProcess(full = false){
   if(!original) return;
-  if(busy){ pending = true; return; }
-  busy = true; setStatus(() => t('status.processing')); $('download').disabled = true;
-  const sent = brush.strokes, upTo = sent.length ? sent[sent.length - 1].id : 0;
+  if(busy){ if(full) pendingFull = true; else pending = true; return; }
+  busy = true;
+  const wantBefore = needBefore && !full;     // the first result for this photo: it's found first
+  setStatus(() => full ? t('progress.full') : wantBefore ? t('progress.finding') : t('status.processing'),
+            full || wantBefore);
+  $('download').disabled = true;
+  const source = original, sent = brush.strokes, upTo = sent.length ? sent[sent.length - 1].id : 0;
   const point = history.point;      // the History entry this result shows
+  // When it doesn't work: Download can be tried again (the preview still stands), and a
+  // new photo that couldn't be retouched shows nothing under Retouched.
+  const failed = () => {
+    if(full) $('download').disabled = false;
+    else if(!loading.classList.contains('hidden')){ setLoading(null); $('after').removeAttribute('src'); }
+  };
   try {
     const res = await fetch('/process', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        image: original,
+        image: source,
         strength: +$('strength').value / 100,
         texture: +$('texture').value / 100,
         shine: +$('shine').value / 100,
@@ -389,13 +474,28 @@ async function runProcess(){
         face_only: $('faceonly').checked,
         blemish: +$('blemish').value / 100,
         mask_strokes: sent,
-        want_mask: brush.editing
+        preview: !full,
+        want_mask: !full && brush.editing,
+        want_before: wantBefore
       })
     });
     const data = await res.json();
-    if(data.error){ setStatus(() => t('status.error', { message: data.error })); }
+    if(source !== original){ /* another photo was opened meanwhile: nothing to show */ }
+    else if(data.error){
+      failed();
+      setStatus(() => t('status.error', { message: data.error }));
+    }
+    else if(full){
+      const a = document.createElement('a');
+      a.href = data.image; a.download = originalName + '_retouched' + (data.ext || '.jpg'); a.click();
+      history.markSaved(point);       // closing the tab now loses nothing
+      $('download').disabled = false;
+      setStatus(() => summary(data));
+    }
     else {
       $('after').src = data.image;
+      setLoading(null);
+      if(data.before_image){ $('before').src = data.before_image; needBefore = false; }
       if(data.mask_image){
         const picture = new Image();
         picture.onload = () => brush.setMaskImage(picture, upTo);
@@ -403,21 +503,23 @@ async function runProcess(){
       }
       $('download').disabled = false;
       $('editmask').disabled = false;
-      $('download').onclick = () => {
-        const a = document.createElement('a');
-        a.href = data.image; a.download = originalName + '_retouched' + (data.ext || '.jpg'); a.click();
-        history.markSaved(point);       // closing the tab now loses nothing
-      };
       if(!data.blemish_model){
         modelMissing = true;
         $('blemish').disabled = true; $('bval').textContent = t('status.modelMissing');
       }
       setStatus(() => summary(data));
     }
-  } catch(err){ setStatus(() => t('status.error', { message: String(err) })); }
+  } catch(err){
+    if(source === original){
+      failed();
+      setStatus(() => t('status.error', { message: String(err) }));
+    }
+  }
   busy = false;
-  if(pending){ pending = false; runProcess(); }
+  if(pendingFull){ pendingFull = false; runProcess(true); }    // a waiting edit runs after it
+  else if(pending){ pending = false; runProcess(); }
 }
+$('download').addEventListener('click', () => runProcess(true));
 </script>
 </body>
 </html>
@@ -467,8 +569,11 @@ class Handler(BaseHTTPRequestHandler):
             light = smoother.LIGHTING.get(payload.get("lighting"), 1.0)
             face_only = bool(payload.get("face_only", False))
             blemish_amt = float(payload.get("blemish", 0.0))
+            # The page asks for a preview while editing and the full size to download.
+            preview = bool(payload.get("preview", False))
 
-            img, info, faces, mask, corr, spots = _analysed(payload["image"], face_only)
+            full_h, full_w = _analysed(payload["image"], face_only)[0].shape[:2]
+            img, info, faces, mask, corr, spots = _analysed(payload["image"], face_only, preview)
             n_faces = 0 if faces is None else len(faces)
 
             # The brush's strokes change the mask, and take restored areas out of the fills.
@@ -496,12 +601,16 @@ class Handler(BaseHTTPRequestHandler):
             out = heal.apply_light(out, strokes, smoother.detail_sigma(img.shape, faces, grain))
 
             # Save like the original: same colour profile, EXIF, DPI and JPEG
-            # quality, so colours and file size match what was uploaded.
+            # quality, so colours and file size match what was uploaded. A preview
+            # only has to show right on screen.
             fmt = photo_io.output_format(info)
-            b64 = base64.b64encode(photo_io.encode(out, info, fmt)).decode("ascii")
             mime, ext = ("image/png", ".png") if fmt == "PNG" else ("image/jpeg", ".jpg")
+            if preview:
+                image = _picture(photo_io.encode_preview(out, info), "image/jpeg")
+            else:
+                image = _picture(photo_io.encode(out, info, fmt), mime)
             resp = {
-                "image": f"data:{mime};base64," + b64,
+                "image": image,
                 "ext": ext,
                 "faces": n_faces,
                 "model": smoother.have_face_model(),
@@ -510,10 +619,13 @@ class Handler(BaseHTTPRequestHandler):
                 # for the page to say in its own language: spots removed, or faces treated
                 "blemish_count": blemish_count,
                 "blemish_unit": "spots" if blemish.ENGINE == "classic" else "faces",
-                "w": img.shape[1], "h": img.shape[0],
+                "w": full_w, "h": full_h,       # the photo's own size, for the status line
             }
             if payload.get("want_mask"):
                 resp["mask_image"] = _mask_image(mask)
+            if preview and payload.get("want_before"):
+                # The Original beside it at the same size, so zooming in compares like with like.
+                resp["before_image"] = _picture(photo_io.encode_preview(img, info), "image/jpeg")
             self._send(200, json.dumps(resp).encode("utf-8"), "application/json")
         except Exception as e:
             self._send(200, json.dumps({"error": str(e)}).encode("utf-8"),

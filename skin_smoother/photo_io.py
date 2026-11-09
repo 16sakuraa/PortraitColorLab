@@ -82,6 +82,17 @@ def encode(bgr: np.ndarray, info: PhotoInfo, fmt: str = "JPEG") -> bytes:
     return buf.getvalue()
 
 
+def encode_preview(bgr: np.ndarray, info: PhotoInfo) -> bytes:
+    """A quick on-screen copy: JPEG at quality 90 with full colour resolution, carrying
+    only the colour profile, so a browser still shows its colours right (an Adobe RGB
+    photo, say). Not for saving; like encodePreview in the web app."""
+    im = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    kw = {"icc_profile": info.icc} if info.icc else {}
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90, subsampling=0, **kw)
+    return buf.getvalue()
+
+
 def output_format(info: PhotoInfo) -> str:
     """Keep PNGs as PNG (lossless); everything else is saved as JPEG."""
     return "PNG" if info.format == "PNG" else "JPEG"

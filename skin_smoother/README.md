@@ -128,9 +128,11 @@ back.
 | Ctrl+Z | Undo the last change (any change, not only strokes) |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 
-Each stroke reprocesses the photo: about 1-2 s on a 20-megapixel file here, quicker
-in the web app, which updates a preview. Strokes apply to the full-size download and
-are cleared when you open another photo.
+Each stroke reprocesses the photo. While you edit, both pages work on a preview at
+most 1600 pixels on its long side, so a stroke comes back in a fraction of a second;
+**Download** then processes the full-size photo (about a second on a 20-megapixel file
+here). Zoomed in far, the preview looks softer than the download will. Strokes apply
+to the full-size download and are cleared when you open another photo.
 
 ## Install (manual)
 

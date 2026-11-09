@@ -25,10 +25,19 @@ const zoom = attachCompareZoom([$('before'), $('after')]);
 const steps = attachSteps({ panel: document.querySelector('.tools'), brush, navBefore: $('historybox') });
 // Every change listed, to go back to any of them, with Undo and Redo.
 const history = attachHistory({ host: $('historybox'), brush, render: () => requestRender() });
+// While a new photo's first result is on its way, the Retouched side shows that photo
+// dimmed under a spinner and these words (an i18n key), not the last photo's retouch.
+const loading = Object.assign(document.createElement('div'), { className: 'loading hidden' });
+$('after').closest('.mask-clip').append(loading);
+function setLoading(key) {
+  loading.classList.toggle('hidden', !key);
+  if (key) { loading.dataset.i18n = key; loading.textContent = t(key); }
+}
 
 let ready = false, hasPhoto = false, engine = '';
 let photoName = 'photo';
 let renderId = 0, shownId = 0, busy = false, pending = false;
+let staleUpTo = 0;      // renders asked for before the photo on show was opened
 const urls = { before: null, after: null };
 
 // text: a function giving the words, so a language switch can say it again.
@@ -109,6 +118,9 @@ worker.onmessage = ({ data }) => {
     case 'opened': {
       hasPhoto = true;
       show('before', data.before);
+      show('after', data.before);       // under the loading cover until its retouch arrives
+      setLoading('status.processing');
+      staleUpTo = renderId;
       $('drop').classList.add('hidden');
       $('workspace').classList.remove('hidden');
       $('reset').classList.remove('hidden');
@@ -124,9 +136,10 @@ worker.onmessage = ({ data }) => {
       break;
     case 'rendered':
       busy = false;
-      if (data.id >= shownId) {
+      if (data.id >= shownId && data.id > staleUpTo) {
         shownId = data.id;
         show('after', data.blob);
+        setLoading(null);
         if (data.maskBytes) brush.setMaskBytes(data.maskW, data.maskH, data.maskBytes, data.upTo);
       }
       if (pending) { pending = false; requestRender(); }
@@ -145,6 +158,8 @@ worker.onmessage = ({ data }) => {
     }
     case 'error':
       busy = false;
+      if (!loading.classList.contains('hidden')) $('after').removeAttribute('src');   // never retouched
+      setLoading(null);
       setControls(hasPhoto);
       status(() => t('status.wrong', { message: data.message }));
       break;
@@ -192,6 +207,7 @@ $('download').addEventListener('click', () => {
 $('reset').addEventListener('click', () => {
   if (!mayLeave()) return;
   hasPhoto = false;
+  setLoading(null);
   brush.reset();
   history.clear();
   steps.setStep(1);

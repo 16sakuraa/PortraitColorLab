@@ -66,6 +66,12 @@
   .busy::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; border-radius: 50%;
                  border: 2px solid var(--muted); border-top-color: transparent; animation: spin .8s linear infinite; vertical-align: -1px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* A new photo on its way: shown dimmed under a spinner, never the last photo's retouch. */
+  .loading { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 12px; padding: 16px; text-align: center; font-size: 14px;
+             background: #000000a0; color: #fff; }
+  .loading::before { content: ""; width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff;
+                     border-top-color: transparent; animation: spin .8s linear infinite; }
   footer { padding: 18px; text-align: center; font-size: 12px; color: var(--muted); }
   footer a { color: inherit; }
   /* Narrower screens: the settings above the photos, in columns. */
