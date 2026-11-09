@@ -39,6 +39,12 @@ export const TUNE = {
   pore_lean: 0.5,
   pore_depth: 1.0,
   pore_min_level: 0.006,
+  shine_lift: 0.02,
+  shine_span: 0.08,
+  shine_lo: 2.0,
+  shine_hi: 4.0,
+  shine_colour_lo: 1.0,
+  shine_colour_hi: 2.0,
 };
 export const MIN_SPLIT_SIGMA = 0.6;
 const MIN_PORE_SIGMA = 0.6, MIN_PORE_GAIN = 0.15, PORE_SEED = 0x9E3779B9 | 0, PORE_PATCH = 256, SOFT_BLUR_MIN = 1.4;
@@ -46,6 +52,14 @@ const NO_FACE_WIDTH = 0.25, GROUP_RATIO = 1.5, MIN_DETAIL_LEVEL = 0.002;
 const SPLIT_RADIUS_PER_SIGMA = 1.2;
 const LEVEL_BANDS = 8, LEVEL_BAND_ROWS = 32;
 const LUMA_B = 0.114, LUMA_G = 0.587, LUMA_R = 0.299;
+// Print size (smoother.PRINT_GRAIN): a small print keeps coarser grain, because
+// detail finer than about one printed pixel disappears in it.
+export const PRINT_GRAIN = { large: 1.0, small: 2.0 };
+export const MAX_GRAIN = 2.5;
+// Lighting (smoother.LIGHTING): hard or patchy light leaves mottled light and
+// shadow, evened out by a wider brightness radius; shading is still kept.
+export const LIGHTING = { soft: 1.0, hard: 2.0 };
+export const MAX_LIGHT = 3.0;
 
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
 
@@ -160,7 +174,8 @@ export function scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols) {
 
 // What to add to each pixel's tone layer, on a reduced copy of the region:
 // a CV_32FC3 Mat (B, G, R), working rows by full width. Caller deletes it.
-function toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, strength) {
+// light widens the brightness radius for hard light (LIGHTING).
+function toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, strength, light = 1) {
   const rh = roi.rows, rw = roi.cols;
   let reduced = roi, maskW = maskMat;
   if (scale < 1) {
@@ -248,7 +263,7 @@ function toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, stren
   };
 
   for (const { width, weight } of scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols)) {
-    const rY = Math.max(1, pyRound(width * scale * TUNE.luma_radius));
+    const rY = Math.max(1, pyRound(width * scale * TUNE.luma_radius * light));
     const rC = Math.max(2, pyRound(width * scale * TUNE.chroma_radius));
     addChange(dY, Y, rY, epsY, weight);
     addChange(dCr, Cr, rC, epsC, weight);
@@ -296,21 +311,30 @@ export function detailStrip(cv, roi, y0, y1, sigma) {
   return { values, high };
 }
 
-// Median brightness detail on skin well inside the mask, in 0..1 units. Skin
-// detail strength varies with exposure, sharpness and resolution, so the detail
-// bands are multiples of this rather than fixed values.
-function detailLevel(cv, roi, mask, sigma) {
-  const rw = roi.cols, rh = roi.rows, rows = [];
+// Evenly spaced bands of rows [y0, y1] through skin well inside the mask: enough
+// for a stable median (smoother._sample_bands). Empty without such skin.
+function sampleBands(mask, rw, rh) {
+  const rows = [];
   for (let y = 0; y < rh; y++) {
     for (let x = 0; x < rw; x++) {
       if (mask[y * rw + x] > 0.9) { rows.push(y); break; }
     }
   }
-  if (!rows.length) return MIN_DETAIL_LEVEL;
-  const samples = [];
+  if (!rows.length) return [];
+  const bands = [];
   for (let i = 0; i < LEVEL_BANDS; i++) {
     const y0 = rows[Math.floor((2 * i + 1) * rows.length / (2 * LEVEL_BANDS))];
-    const y1 = Math.min(rh, y0 + LEVEL_BAND_ROWS);
+    bands.push([y0, Math.min(rh, y0 + LEVEL_BAND_ROWS)]);
+  }
+  return bands;
+}
+
+// Median brightness detail on skin well inside the mask, in 0..1 units. Skin
+// detail strength varies with exposure, sharpness and resolution, so the detail
+// bands are multiples of this rather than fixed values.
+function detailLevel(cv, roi, mask, sigma) {
+  const rw = roi.cols, samples = [];
+  for (const [y0, y1] of sampleBands(mask, rw, roi.rows)) {
     const { high } = detailStrip(cv, roi, y0, y1, sigma);
     for (let y = y0, p = 0; y < y1; y++) {
       for (let x = 0; x < rw; x++, p += 3) {
@@ -319,6 +343,24 @@ function detailLevel(cv, roi, mask, sigma) {
     }
   }
   return samples.length ? Math.max(MIN_DETAIL_LEVEL, median(samples)) : MIN_DETAIL_LEVEL;
+}
+
+// Median brightness (0..1) of the tone layer on skin well inside the mask, on the
+// same rows as detailLevel; null without such skin (smoother._skin_tone). Reduce
+// shine treats skin brighter than this as where shine can be.
+function skinTone(cv, roi, mask, sigma) {
+  const rw = roi.cols, samples = [];
+  for (const [y0, y1] of sampleBands(mask, rw, roi.rows)) {
+    const { values, high } = detailStrip(cv, roi, y0, y1, sigma);
+    for (let y = y0, p = 0; y < y1; y++) {
+      for (let x = 0; x < rw; x++, p += 3) {
+        if (mask[y * rw + x] > 0.9) {
+          samples.push(LUMA_B * (values[p] - high[p]) + LUMA_G * (values[p + 1] - high[p + 1]) + LUMA_R * (values[p + 2] - high[p + 2]));
+        }
+      }
+    }
+  }
+  return samples.length ? median(samples) : null;
 }
 
 // Noise with structure at one size only (a plain array): noise in -1..1 from each
@@ -364,11 +406,12 @@ const leanDark = (v) => v * (v < 0 ? 1 + TUNE.pore_lean : 1 - TUNE.pore_lean);
 // that's coarse for their size. The fade is about how much real pores weaken when a
 // photo is shrunk, so a preview shows roughly what the export will look like at that
 // size. spread and mean are measured on a fixed patch, which keeps every strip on
-// the same scale. weight is workRows x rw, or null.
-function poreGroups(cv, regions, rw, workRows, workCols) {
+// the same scale. weight is workRows x rw, or null. grain enlarges the pores for a
+// small print.
+function poreGroups(cv, regions, rw, workRows, workCols, grain = 1) {
   const groups = [];
   for (const { width, weight } of regions) {
-    const size = width * TUNE.pore_size, gain = Math.min(1, size / MIN_PORE_SIGMA);
+    const size = width * TUNE.pore_size * grain, gain = Math.min(1, size / MIN_PORE_SIGMA);
     if (gain < MIN_PORE_GAIN) continue;
     const sigma = Math.max(MIN_PORE_SIGMA, size);
     const band = poreBand(cv, 0, 0, PORE_PATCH, PORE_PATCH, sigma);
@@ -429,12 +472,20 @@ function nearEdge(cv, roi, y0, y1, radius, lo, hi) {
 // faces: YuNet rows in this image's pixels; pores: 0..1, synthetic pore texture
 // (scaled to the detail measured on this photo, sized to the face, brightness
 // only, and following the smoothing: through the mask, in proportion to strength,
-// not on anything left alone).
-export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0) {
+// not on anything left alone); grain: 1..MAX_GRAIN, size of the grain kept and
+// added, for the print size (PRINT_GRAIN; 1 = large print or screen); shine: 0..1,
+// how much more to remove of bright, colourless grain on the brighter skin (the
+// glints on oily skin; dark pores, freckles and coloured marks are untouched);
+// light: 1..MAX_LIGHT, how far brightness is evened out, for the lighting
+// (LIGHTING; 1 = soft studio light).
+export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0, grain = 1, shine = 0, light = 1) {
   strength = clamp01(strength);
   if (strength <= 0) return copyMat(cv, bgr);
   texture = clamp01(texture);
   pores = clamp01(pores);
+  grain = Math.min(Math.max(grain, 1), MAX_GRAIN);
+  shine = clamp01(shine);
+  light = Math.min(Math.max(light, 1), MAX_LIGHT);
   const H = bgr.rows, W = bgr.cols, diag = Math.hypot(H, W);
 
   // Bounding box of the mask (> 1e-3), in photo coordinates.
@@ -466,20 +517,21 @@ export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0) {
   }
 
   const scale = Math.min(1.0, Math.sqrt(WORK_PIXELS / (rh * rw)));
-  const sigma = Math.max(MIN_SPLIT_SIGMA, medianOf(widths) * TUNE.split);
+  const sigma = Math.max(MIN_SPLIT_SIGMA, medianOf(widths) * TUNE.split * grain);
 
   const maskMat = cv.matFromArray(rh, rw, cv.CV_32F, maskR);
-  const tone = toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, strength);
+  const tone = toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, strength, light);
   maskMat.delete();
   const workRows = tone.rows;
   const level = detailLevel(cv, roi, maskR, sigma);
   let groups = [];
   if (pores > 0) {
     const workCols = scale < 1 ? Math.max(1, pyRound(rw * scale)) : rw;
-    groups = poreGroups(cv, scaleRegions(cv, faces, widths, scale, x0, y0, workRows, workCols), rw, workRows, workCols);
+    groups = poreGroups(cv, scaleRegions(cv, faces, widths, scale, x0, y0, workRows, workCols), rw, workRows, workCols, grain);
   }
   const poreAmount = pores * TUNE.pore_depth * Math.max(level, TUNE.pore_min_level);
   const edgeRadius = Math.max(1, pyRound(SPLIT_RADIUS_PER_SIGMA * sigma));
+  const toneMid = shine > 0 ? skinTone(cv, roi, maskR, sigma) : null;
   const keepLo = TUNE.keep_lo * level, keepHi = TUNE.keep_hi * level;
 
   // Tone-change rows either side of a full-resolution row: linear between them.
@@ -508,6 +560,9 @@ export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0) {
 
   const colourLo = TUNE.keep_colour_lo * level, colourHi = TUNE.keep_colour_hi * level;
   const lineLo = TUNE.line_lo * level, lineHi = TUNE.line_hi * level, lineCut = TUNE.line_cut;
+  const glintLo = TUNE.shine_lo * level, glintHi = TUNE.shine_hi * level;
+  const glintColourLo = TUNE.shine_colour_lo * level, glintColourHi = TUNE.shine_colour_hi * level;
+  const shinyLo = TUNE.shine_lift, shinyHi = TUNE.shine_lift + TUNE.shine_span;
 
   const out = copyMat(cv, bgr);
   for (let top = 0; top < rh; top += STRIP_ROWS) {
@@ -527,7 +582,15 @@ export function smoothFace(cv, bgr, strength, texture, mask, faces, pores = 0) {
         const amount = Math.abs(luma);
         const colour = Math.max(Math.abs(hb - luma), Math.abs(hg - luma), Math.abs(hr - luma));
         const keep = Math.max(smoothstep(amount, keepLo, keepHi), smoothstep(colour, colourLo, colourHi));
-        const removed = 1 - texture * (1 - lineCut * smoothstep(amount, lineLo, lineHi));
+        let removed = 1 - texture * (1 - lineCut * smoothstep(amount, lineLo, lineHi));
+        if (toneMid !== null) {
+          // Glints: brighter than their surroundings, nearly colourless, on the brighter skin.
+          const toneLuma = LUMA_B * (values[p] - hb) + LUMA_G * (values[p + 1] - hg) + LUMA_R * (values[p + 2] - hr);
+          const glint = smoothstep(luma, glintLo, glintHi)
+            * (1 - smoothstep(colour, glintColourLo, glintColourHi))
+            * smoothstep(toneLuma - toneMid, shinyLo, shinyHi);
+          removed = removed + (1 - removed) * (shine * glint);
+        }
         // A real edge is left alone completely: the tone change was worked out
         // on a blurred copy, so applying it there would soften the edge.
         const here = a * strength * (1 - keep), pore = added ? added[p / 3] : 0;

@@ -89,26 +89,45 @@ PAGE ="""<!doctype html>
          background: #f4f5f7; color: #1a1a1a; }
   @media (prefers-color-scheme: dark) {
     body { background: #16181c; color: #e8e8e8; }
-    .panel, header { background: #22252b !important; }
+    .panel, header, .tools { background: #22252b !important; }
     .drop { border-color: #3a3f47 !important; }
+    .tools section + section { border-top-color: #ffffff1f !important; }
   }
   header { background: #fff; padding: 14px 20px; border-bottom: 1px solid #0001;
            display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   header h1 { font-size: 17px; margin: 0; font-weight: 650; }
-  .controls { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin-left: auto; }
-  .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 170px; }
+  .actions { display: flex; gap: 10px; margin-left: auto; }
+  .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ctl label { font-size: 12px; opacity: .75; display: flex; justify-content: space-between; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .75; cursor: pointer; }
-  input[type=range] { width: 180px; accent-color: #4b7bec; }
+  input[type=range] { width: 100%; margin: 4px 0; accent-color: #4b7bec; }
+  select { width: 100%; font: inherit; font-size: 13px; padding: 3px 4px; border-radius: 6px; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px;
            background: #4b7bec; color: #fff; cursor: pointer; }
   button.secondary { background: #6b7280; }
   button:disabled { opacity: .45; cursor: default; }
-  main { padding: 18px; }
+  /* Photos on the left, the settings in a panel on the right that stays in view. */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start;
+            padding: 18px; }
+  main { min-width: 0; }
+  .tools { background: #fff; border-radius: 12px; padding: 16px; position: sticky; top: 12px;
+           max-height: calc(100vh - 24px); overflow-y: auto; display: grid; gap: 16px; }
+  .tools section { display: grid; gap: 12px; align-content: start; }
+  .tools section + section { border-top: 1px solid #0000001a; padding-top: 16px; }
+  .tools h2 { font-size: 13px; font-weight: 650; margin: 0; }
+  .tools button { justify-self: start; }
+  /* While painting, the panel holds only the brush. */
+  body.mask-editing .tools > section:not(#brushbox) { display: none; }
+  body.mask-editing .tools > #brushbox { border-top: 0 !important; padding-top: 0; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .tools { order: -1; position: static; max-height: none; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .tools section + section { border-top: 0; padding-top: 0; }
+  }
   .drop { border: 2px dashed #c7ccd4; border-radius: 12px; padding: 40px;
           text-align: center; background: #fff8; cursor: pointer; }
   .drop.small { padding: 14px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .panel { background: #fff; border-radius: 12px; padding: 10px; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
               opacity: .6; margin: 4px 6px 10px; }
@@ -125,31 +144,14 @@ PAGE ="""<!doctype html>
 <header>
   <h1>Skin Smoother</h1>
   <span class="version" id="version">version __VERSION__</span>
-  <div class="controls">
-    <div class="ctl">
-      <label>Remove blemishes <span id="bval">100</span></label>
-      <input id="blemish" type="range" min="0" max="100" value="100">
-    </div>
-    <div class="ctl">
-      <label>Strength <span id="sval">60</span></label>
-      <input id="strength" type="range" min="0" max="100" value="60">
-    </div>
-    <div class="ctl">
-      <label>Keep texture <span id="tval">60</span></label>
-      <input id="texture" type="range" min="0" max="100" value="60">
-    </div>
-    <div class="ctl">
-      <label>Add pores <span id="pval">0</span></label>
-      <input id="pores" type="range" min="0" max="100" value="0">
-    </div>
-    <label class="check"><input id="faceonly" type="checkbox"> Face only</label>
-    <button id="editmask" class="secondary" disabled>Edit mask</button>
-    <button id="download" disabled>Download</button>
+  <div class="actions">
     <button id="reset" class="secondary hidden">New image</button>
+    <button id="download" disabled>Download</button>
   </div>
 </header>
 <div id="update" class="update hidden"></div>
 
+<div class="layout">
 <main>
   <div id="drop" class="drop">
     <p><strong>Click to choose a photo</strong> or drag it here</p>
@@ -166,6 +168,55 @@ PAGE ="""<!doctype html>
   </div>
 </main>
 
+<aside class="tools" aria-label="Retouch settings">
+  <section>
+    <h2>Retouch</h2>
+    <div class="ctl">
+      <label>Remove blemishes <span id="bval">100</span></label>
+      <input id="blemish" type="range" min="0" max="100" value="100">
+    </div>
+    <div class="ctl">
+      <label>Strength <span id="sval">60</span></label>
+      <input id="strength" type="range" min="0" max="100" value="60">
+    </div>
+    <div class="ctl">
+      <label>Keep texture <span id="tval">60</span></label>
+      <input id="texture" type="range" min="0" max="100" value="60">
+    </div>
+    <div class="ctl">
+      <label title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone.">Reduce shine <span id="rval">0</span></label>
+      <input id="shine" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="ctl">
+      <label>Add pores <span id="pval">0</span></label>
+      <input id="pores" type="range" min="0" max="100" value="0">
+    </div>
+  </section>
+  <section>
+    <h2>Photo</h2>
+    <div class="ctl">
+      <label for="lighting">Lighting</label>
+      <select id="lighting" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
+        <option value="soft" selected>Soft (studio)</option>
+        <option value="hard">Hard or patchy (flash)</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="print">Print size</label>
+      <select id="print" title="A small print keeps coarser grain, so the skin still has texture at that size. It looks coarser here.">
+        <option value="large" selected>Large print or screen</option>
+        <option value="small">Small print (1-inch ID)</option>
+      </select>
+    </div>
+    <label class="check"><input id="faceonly" type="checkbox"> Face only</label>
+  </section>
+  <section id="brushbox">
+    <h2>Brush</h2>
+    <button id="editmask" class="secondary" disabled>Use brush</button>
+  </section>
+</aside>
+</div>
+
 <script type="module">
 import { attachMaskBrush } from '/mask_brush.js';
 
@@ -178,6 +229,8 @@ const brush = attachMaskBrush({
   button: $('editmask'),
   onChange: () => runProcess(),
   onModeChange: (editing) => { if (editing) runProcess(); },
+  toolsHost: $('brushbox'),
+  labels: ['Use brush', 'Done with brush'],
 });
 
 const modelNote = () => {};
@@ -232,14 +285,16 @@ $('reset').addEventListener('click', () => {
   $('file').value = '';
 });
 
-const valueLabel = {strength: 'sval', texture: 'tval', pores: 'pval', blemish: 'bval'};
-['strength','texture','pores','blemish'].forEach(id => {
+const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', pores: 'pval', blemish: 'bval'};
+['strength','texture','shine','pores','blemish'].forEach(id => {
   $(id).addEventListener('input', () => {
     $(valueLabel[id]).textContent = $(id).value;
     process();
   });
 });
 $('faceonly').addEventListener('change', process);
+$('print').addEventListener('change', process);
+$('lighting').addEventListener('change', process);
 
 let debounce = null;
 function process(){
@@ -260,7 +315,10 @@ async function runProcess(){
         image: original,
         strength: +$('strength').value / 100,
         texture: +$('texture').value / 100,
+        shine: +$('shine').value / 100,
         pores: +$('pores').value / 100,
+        print: $('print').value,
+        lighting: $('lighting').value,
         face_only: $('faceonly').checked,
         blemish: +$('blemish').value / 100,
         mask_strokes: brush.strokes,
@@ -338,6 +396,9 @@ class Handler(BaseHTTPRequestHandler):
             strength = float(payload.get("strength", 0.6))
             texture = float(payload.get("texture", 0.6))
             pores = float(payload.get("pores", 0.0))
+            grain = smoother.PRINT_GRAIN.get(payload.get("print"), 1.0)
+            shine = float(payload.get("shine", 0.0))
+            light = smoother.LIGHTING.get(payload.get("lighting"), 1.0)
             face_only = bool(payload.get("face_only", False))
             blemish_amt = float(payload.get("blemish", 0.0))
 
@@ -358,7 +419,8 @@ class Handler(BaseHTTPRequestHandler):
                 blemish_count = spots
                 healed = blemish.apply(img, corr, blemish_amt)
             out = smoother.smooth_face(healed, strength=strength, texture=texture,
-                                       mask=mask, faces=faces, pores=pores)
+                                       mask=mask, faces=faces, pores=pores, grain=grain, shine=shine,
+                                       light=light)
 
             # Save like the original: same colour profile, EXIF, DPI and JPEG
             # quality, so colours and file size match what was uploaded.

@@ -3,10 +3,12 @@
 // A stroke is resolution-independent, so one set of strokes gives the same edit on a
 // preview and on the full-size photo:
 //   { mode: 'protect' or 'skin', size: brush diameter as a share of the long side,
-//     soft: 0..1, points: [x0, y0, x1, y1, ...] each 0..1 of the width or height }
-// Strokes are painted in order into a layer from -1 (protect) to 1 (skin), so a later
-// stroke wins where they cross. Protect means never smooth here and don't fill any
-// spots here; skin means smooth here even where the automatic mask left it out.
+//     soft: 0..1, amount: 0..1 (optional, 1 if missing),
+//     points: [x0, y0, x1, y1, ...] each 0..1 of the width or height }
+// Strokes are painted in order into a layer from -1 (protect) to 1 (skin), each towards
+// its own amount, so a later stroke wins where they cross. Protect, shown as Restore,
+// brings back that share of the original: at 1, never smooth here and don't fill any
+// spots here. Skin means smooth here even where the automatic mask left it out.
 
 import { pyRound } from './skinmask.js';
 
@@ -47,7 +49,8 @@ export function paintStroke(cv, layer, stroke) {
   stamp.delete();
   cv.GaussianBlur(asFloat, blurred, new cv.Size(0, 0), sigma);
   asFloat.delete();
-  const soft = blurred.data32F, data = layer.data, target = stroke.mode === 'skin' ? 1 : -1;
+  const soft = blurred.data32F, data = layer.data;
+  const target = (stroke.mode === 'skin' ? 1 : -1) * (stroke.amount ?? 1);
   for (let y = 0, p = 0; y < bh; y++) {
     let q = (y + y0) * lw + x0;
     for (let x = 0; x < bw; x++, p++, q++) data[q] = data[q] * (1 - soft[p]) + target * soft[p];

@@ -13,17 +13,31 @@ a DSLR), camera data and print resolution.
 ## What it does
 
 - **Skin mask:** a segmentation model finds face and body skin, and leaves out
-  hair, glasses, clothes and backdrops. Eyes, brows and lips are protected. Tick
+  hair, glasses, clothes and backdrops. Eyes, brows, lips and ears are protected. Tick
   **Face only** to leave out the neck and body.
 - **Remove blemishes:** finds small red marks with image processing and fills
   them from the skin around them. Moles and stubble are left alone.
 - **Strength and Keep texture:** smooth the skin's tone, and keep its shape and
   pores. Sizes follow the face, so results don't depend on the crop.
+- **Reduce shine:** tames the bright glints of oily skin: grain that is brighter
+  than its surroundings, nearly colourless, and on the brighter parts of the face.
+  Dark pores, freckles and coloured marks are left alone. Off by default.
 - **Add pores:** adds fine synthetic pore texture, for soft skin or strong
   smoothing. Off by default.
-- **Edit mask:** a brush for when the automatic mask is wrong: paint **Protect**
-  to keep an area as it is, or **Add skin** to smooth it. In the web app and the
-  `.exe`.
+- **Lighting:** for hard or patchy light (on-camera flash, a bare window), evens
+  out mottled light and shadow a few millimetres across, while keeping the face's
+  shading so it doesn't look puffy. It doesn't blend a sharp shadow edge. Soft
+  studio light, the default, needs nothing extra.
+- **Print size:** for a small print such as a 1-inch ID photo, keeps coarser skin
+  grain, because grain finer than a printed dot disappears at that size. The
+  print then keeps as much texture as Keep texture asks for. It looks coarser on
+  screen.
+- **Brush:** paint **Restore** to bring back the original, all of it or part
+  (Strength), for example around the eyes or on a mole, or **Add skin** to smooth
+  an area the automatic mask left out. In the web app and the `.exe`.
+
+The settings sit in a panel on the right of the window, grouped as Retouch, Photo
+and Brush; on a narrow screen they move above the photos.
 
 ## What's here
 

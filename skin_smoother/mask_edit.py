@@ -7,12 +7,15 @@ preview and on the full-size photo:
     {"mode": "protect" or "skin",
      "size": brush diameter, as a share of the photo's long side,
      "soft": 0..1, how soft its edge is,
+     "amount": 0..1, how far to go (optional, 1 if missing),
      "points": [x0, y0, x1, y1, ...], each 0..1 of the photo's width or height}
 
-Strokes are painted in order into a layer running from -1 (protect) to 1 (skin), so a
-later stroke wins where they cross. The layer is then applied to the mask:
+Strokes are painted in order into a layer running from -1 (protect) to 1 (skin), each
+towards its own amount, so a later stroke wins where they cross: a 40% stroke over a
+100% one leaves 40%. The layer is then applied to the mask:
 
-    protect  never smooth here, and don't fill any spots here
+    protect  shown as Restore: bring back this share of the original. At 1, never
+             smooth here and don't fill any spots here
     skin     smooth here, even where the automatic mask left it out
 
 Painting skin doesn't look for spots there: spot detection stays automatic.
@@ -58,7 +61,7 @@ def paint_stroke(layer: np.ndarray, stroke: dict) -> None:
     for a, b in zip(moved, moved[1:]):
         cv2.line(stamp, a, b, 255, thick, cv2.LINE_8)
     soft = cv2.GaussianBlur(stamp.astype(np.float32) / 255.0, (0, 0), sigma)
-    target = 1.0 if stroke["mode"] == "skin" else -1.0
+    target = (1.0 if stroke["mode"] == "skin" else -1.0) * float(stroke.get("amount", 1.0))
     layer[y0:y1, x0:x1] = layer[y0:y1, x0:x1] * (1.0 - soft) + target * soft
 
 

@@ -3,17 +3,19 @@ Face-aware skin smoothing.
 
 Pipeline:
   1. Detect the faces and build a soft skin mask: a segmentation model finds face
-     and body skin (skin_segment.py), minus the eyes, eyebrows and lips, which are
-     found from how they differ from the skin. The mask can be edited by hand with
-     a brush (mask_edit.py).
+     and body skin (skin_segment.py), minus the eyes, eyebrows, lips and ears, which
+     a landmark model outlines (face_landmarks.py). The mask can be edited by hand
+     with a brush (mask_edit.py).
   2. Split the skin into a tone layer and a detail layer, using sizes relative
-     to the face, so results don't depend on how the photo was cropped.
+     to the face, so results don't depend on how the photo was cropped. For a
+     small print the split is coarser, so the grain kept is grain that still
+     shows at that size.
   3. Smooth the tone layer with guided filters (brightness over a small radius,
-     colour over a wider one), reading only from skin so a coloured backdrop can't
-     tint it, and keeping the face's large-scale shading.
+     wider for hard light, colour over a wider one), reading only from skin so a
+     coloured backdrop can't tint it, and keeping the face's large-scale shading.
   4. Treat the detail layer by how strong it is at each pixel: reduce pores
      gently, fine lines more, and leave real edges, lashes and stray hairs alone.
-     Optionally add synthetic pores.
+     Optionally tame the bright glints of oily skin, and add synthetic pores.
   5. Composite through the soft mask.
 
 Each model file is looked for next to this script (models/). Without the
@@ -63,6 +65,7 @@ def have_face_model() -> bool:
 
 DETECT_MAX = 1280  # longest side YuNet sees; large faces are missed above this
 SAME_FACE_OVERLAP = 0.3  # share of a smaller face's box inside a larger one's that makes them one face
+CHEEK_REACH = 0.9  # a turned face's near cheek reaches this many box widths from the box's centre
 
 
 def _plausible(face_row) -> bool:
@@ -407,12 +410,15 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
     use YuNet's face geometry; without a face the mask comes from skin tone.
     feather softens that older outline; the model's outline is already soft.
     Eyes, brows and lips stay out, outlined by face_landmarks.py where it can.
+    Ears stay out where it can outline the face; other faces keep their ears.
     """
     h, w = bgr.shape[:2]
     if faces is None:
         faces = _detect_faces(bgr)
     face_area = np.zeros((h, w), dtype=np.uint8)
-    protect = np.zeros((h, w), dtype=np.uint8)   # eyes, brows, lips: never smoothed
+    protect = np.zeros((h, w), dtype=np.uint8)   # eyes, brows, lips, ears: never smoothed
+    ears = np.zeros((h, w), dtype=np.uint8)      # where each face's ears can be
+    inside = np.zeros((h, w), dtype=np.uint8)    # the faces themselves, which no ear zone may cut
     found = False
 
     model_area, covered = None, ()
@@ -433,8 +439,8 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
 
             # Face oval: ellipse over the box, extended a bit down to the chin
             # and in slightly at the sides.
+            cx, cy = x + fw / 2.0, y + fh * 0.55
             if i not in covered:
-                cx, cy = x + fw / 2.0, y + fh * 0.55
                 ax, ay = fw * 0.52, fh * 0.72
                 cv2.ellipse(face_area, (int(cx), int(cy)), (int(ax), int(ay)),
                             0, 0, 360, 255, -1)
@@ -443,11 +449,23 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
             # Protect the eyes, brows and lips themselves, so the skin around
             # them - under the eyes, above the brows, between nose and lip -
             # still gets smoothed. The landmark model outlines them; where it
-            # can't, they're found from how they differ from skin.
+            # can't, they're found from how they differ from skin. Ears, beside
+            # the outline, are protected too.
             if points[i] is not None:
                 for m, origin in face_landmarks.zones(points[i], w, h):
                     _paint(protect, m, origin)
+                zones, own = face_landmarks.ear_zones(points[i], w, h)
+                for m, origin in zones:
+                    _paint(ears, m, origin)
+                if own is not None:
+                    _paint(inside, *own)
                 continue
+            # Without the outline nothing shows where the cheek ends and the ear
+            # begins (the detector's box stops well short of a turned face's near
+            # cheek), so this face keeps its ears. Its cheek can still reach this
+            # far, so other faces' ear zones stay off it.
+            cv2.ellipse(inside, (int(cx), int(cy)), (int(fw * CHEEK_REACH), int(fh * 0.72)),
+                        0, 0, 360, 255, -1)
             angle = float(np.degrees(np.arctan2(ley - rey, lex - rex)))
             for (ex, ey) in ((rex, rey), (lex, ley)):
                 m, origin, _ = eye_mask(bgr, ex, ey, eye_d, angle)
@@ -456,6 +474,7 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
                 _paint(protect, m, origin)
             m, origin, _ = lip_mask(bgr, f)
             _paint(protect, m, origin)
+        protect[(ears > 0) & (inside == 0)] = 255
 
     # Feather the face outline. Blur radius scales with image size.
     diag = (h * h + w * w) ** 0.5
@@ -513,6 +532,13 @@ TUNE = {
     "pore_lean": 0.5,        # dark side this much deeper than average, light side this much less
     "pore_depth": 1.0,       # at full slider, the median pit matches the photo's own median detail
     "pore_min_level": 0.006, # softer skin than this (0..1) is treated as this, so the slider still works there
+    # Reduce shine: bright, colourless grain on the brighter skin (glints on oily skin).
+    "shine_lift": 0.02,      # skin this much brighter (0..1) than the face's median tone starts to count as shiny
+    "shine_span": 0.08,      # ... and counts fully this much brighter again
+    "shine_lo": 2.0,         # brightness detail this many median levels up (upwards only): a glint
+    "shine_hi": 4.0,
+    "shine_colour_lo": 1.0,  # colour detail this strong is a coloured mark (a freckle's edge), not a glint
+    "shine_colour_hi": 2.0,
 }
 MIN_PORE_SIGMA = 0.6      # px; pores on faces too small to reach this get fainter instead
 MIN_PORE_GAIN = 0.15      # faces whose pores would be fainter than this are skipped: under a third of a level
@@ -526,6 +552,18 @@ SPLIT_RADIUS_PER_SIGMA = 1.2  # guided filter radius that blurs about as much as
 MIN_DETAIL_LEVEL = 0.002  # 0..1; half an 8-bit step, so clean skin can't divide by ~0
 LEVEL_BANDS = 8           # rows of samples used to measure the detail level
 LEVEL_BAND_ROWS = 32
+# Print size. Detail finer than about one printed pixel disappears in a print, so
+# for a small print the skin grain worth keeping is coarser: the tone/detail split
+# and the synthetic pores are made this many times larger. It looks coarser on
+# screen and right in the print.
+PRINT_GRAIN = {"large": 1.0, "small": 2.0}
+MAX_GRAIN = 2.5           # past this the split overtakes luma_radius and brightness is barely smoothed
+# Lighting. Hard or patchy light (on-camera flash, a bare window) leaves mottled
+# light and shadow a few millimetres across; this many times the brightness
+# smoothing radius evens it out. The face's shading is still kept (contour), so
+# it doesn't look puffy. Soft studio light needs nothing extra.
+LIGHTING = {"soft": 1.0, "hard": 2.0}
+MAX_LIGHT = 3.0
 _LUMA = np.array([0.114, 0.587, 0.299], np.float32)   # B, G, R weights of brightness
 
 
@@ -613,7 +651,7 @@ def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
 
 
 def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, scale: float,
-                 strength: float) -> np.ndarray:
+                 strength: float, light: float = 1.0) -> np.ndarray:
     """What to add to each pixel's tone layer, on a reduced copy of the region
     (scaled back up by the caller): float32 BGR, working rows by full width.
 
@@ -621,6 +659,7 @@ def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, sc
     guided by brightness so it can't cross real edges. Changing colour alone
     doesn't flatten a face, but changing brightness can, so the large-scale
     part of each change is removed again: small marks go, shading stays.
+    light widens the brightness radius for hard light (LIGHTING).
     """
     t = TUNE
     rh, rw = roi.shape[:2]
@@ -663,7 +702,7 @@ def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, sc
     mask_blurs: dict[float, np.ndarray] = {}
     for width, weight in regions_of(Y.shape):
         w = 1.0 if weight is None else weight
-        r_y = max(1, round(width * scale * t["luma_radius"]))
+        r_y = max(1, round(width * scale * t["luma_radius"] * light))
         r_c = max(2, round(width * scale * t["chroma_radius"]))
         d_y += w * change(Y, r_y, eps_y)
         d_cr += w * change(Cr, r_c, eps_c)
@@ -691,24 +730,45 @@ def _detail_strip(roi: np.ndarray, y0: int, y1: int, sigma: float):
     return part[y0 - a:y1 - a], high[y0 - a:y1 - a]
 
 
+def _sample_bands(mask: np.ndarray, rows_total: int) -> list[tuple[int, int]]:
+    """Evenly spaced bands of rows (y0, y1) through skin well inside the mask:
+    enough for a stable median. Empty without such skin."""
+    rows = np.flatnonzero((mask > 0.9).any(axis=1))
+    if len(rows) == 0:
+        return []
+    bands = []
+    for i in range(LEVEL_BANDS):
+        y0 = int(rows[(2 * i + 1) * len(rows) // (2 * LEVEL_BANDS)])
+        bands.append((y0, min(rows_total, y0 + LEVEL_BAND_ROWS)))
+    return bands
+
+
 def _detail_level(roi: np.ndarray, mask: np.ndarray, sigma: float) -> float:
     """Median brightness detail on skin well inside the mask, in 0..1 units.
 
     Skin detail strength varies with exposure, sharpness and resolution, so
-    the detail bands are multiples of this rather than fixed values. Measured
-    on evenly spaced rows, which is enough for a stable median.
+    the detail bands are multiples of this rather than fixed values.
     """
-    rows = np.flatnonzero((mask > 0.9).any(axis=1))
-    if len(rows) == 0:
-        return MIN_DETAIL_LEVEL
     samples = []
-    for i in range(LEVEL_BANDS):
-        y0 = int(rows[(2 * i + 1) * len(rows) // (2 * LEVEL_BANDS)])
-        y1 = min(roi.shape[0], y0 + LEVEL_BAND_ROWS)
+    for y0, y1 in _sample_bands(mask, roi.shape[0]):
         _, high = _detail_strip(roi, y0, y1, sigma)
         samples.append(np.abs(high @ _LUMA)[mask[y0:y1] > 0.9])
+    if not samples:
+        return MIN_DETAIL_LEVEL
     samples = np.concatenate(samples)
     return max(MIN_DETAIL_LEVEL, float(np.median(samples))) if samples.size else MIN_DETAIL_LEVEL
+
+
+def _skin_tone(roi: np.ndarray, mask: np.ndarray, sigma: float) -> float | None:
+    """Median brightness (0..1) of the tone layer on skin well inside the mask,
+    on the same rows as _detail_level; None without such skin. Reduce shine
+    treats skin brighter than this as where shine can be."""
+    samples = []
+    for y0, y1 in _sample_bands(mask, roi.shape[0]):
+        part, high = _detail_strip(roi, y0, y1, sigma)
+        samples.append(((part - high) @ _LUMA)[mask[y0:y1] > 0.9])
+    samples = np.concatenate(samples) if samples else np.zeros(0, np.float32)
+    return float(np.median(samples)) if samples.size else None
 
 
 def _position_noise(x0: int, y0: int, w: int, h: int) -> np.ndarray:
@@ -742,7 +802,7 @@ def _lean_dark(v: np.ndarray) -> np.ndarray:
     return np.where(v < 0, v * (1.0 + lean), v * (1.0 - lean))
 
 
-def _pore_groups(regions, rw: int, work_rows: int) -> list[tuple]:
+def _pore_groups(regions, rw: int, work_rows: int, grain: float = 1.0) -> list[tuple]:
     """(sigma, gain, spread, mean, weight) per group of similar face sizes.
 
     Faces too small to show pores get fainter ones, then none, so they don't
@@ -750,11 +810,11 @@ def _pore_groups(regions, rw: int, work_rows: int) -> list[tuple]:
     real pores weaken when a photo is shrunk, so a preview shows roughly what the
     export will look like at that size. spread and mean are measured on a fixed
     patch, which keeps every strip on the same scale. weight is (work_rows, rw),
-    or None for one group.
+    or None for one group. grain enlarges the pores for a small print.
     """
     groups = []
     for width, weight in regions:
-        size = width * TUNE["pore_size"]
+        size = width * TUNE["pore_size"] * grain
         gain = min(1.0, size / MIN_PORE_SIGMA)
         if gain < MIN_PORE_GAIN:
             continue
@@ -797,6 +857,9 @@ def smooth_face(
     mask: np.ndarray | None = None,
     faces=None,
     pores: float = 0.0,
+    grain: float = 1.0,
+    shine: float = 0.0,
+    light: float = 1.0,
 ) -> np.ndarray:
     """Smooth skin, keeping its shape and pores.
 
@@ -805,6 +868,12 @@ def smooth_face(
     mask     : optional precomputed float mask from build_skin_mask (for speed).
     faces    : optional YuNet rows from _detect_faces, in this image's pixels.
     pores    : 0..1  how much synthetic pore texture to add (0 = none).
+    grain    : 1..MAX_GRAIN  size of the grain kept and added, for the print size
+               (PRINT_GRAIN; 1 = large print or screen).
+    shine    : 0..1  how much more to remove of bright, colourless grain on the
+               brighter skin: the glints on oily skin (0 = none).
+    light    : 1..MAX_LIGHT  how far brightness is evened out, for the lighting
+               (LIGHTING; 1 = soft studio light, larger for hard or patchy light).
 
     The region is split into a tone layer and a detail layer, using sizes
     relative to the face. The tone layer gets _tone_change. The detail layer is
@@ -815,12 +884,20 @@ def smooth_face(
     Synthetic pores are scaled to the detail measured on this photo and sized to
     the face. They change brightness only and follow the smoothing: through the
     mask, in proportion to strength, and not on anything left alone above.
+
+    Reduce shine removes more of the detail that is brighter than its
+    surroundings, nearly colourless, and on skin brighter than the face's median
+    tone. Shine makes pores glint on the bright side only, so dark pores,
+    freckles and coloured marks keep what Keep texture gives them.
     """
     strength = float(np.clip(strength, 0.0, 1.0))
     if strength <= 0.0:
         return bgr.copy()
     texture = float(np.clip(texture, 0.0, 1.0))
     pores = float(np.clip(pores, 0.0, 1.0))
+    grain = float(np.clip(grain, 1.0, MAX_GRAIN))
+    shine = float(np.clip(shine, 0.0, 1.0))
+    light = float(np.clip(light, 1.0, MAX_LIGHT))
 
     if faces is None:
         faces = _detect_faces(bgr)
@@ -844,20 +921,21 @@ def smooth_face(
     rh, rw = roi.shape[:2]
 
     scale = min(1.0, (WORK_PIXELS / (rh * rw)) ** 0.5)
-    sigma = max(MIN_SPLIT_SIGMA, float(np.median(widths)) * t["split"])
+    sigma = max(MIN_SPLIT_SIGMA, float(np.median(widths)) * t["split"] * grain)
 
     def regions_of(shape):
         return _scale_regions(faces, widths, scale, x0, y0, shape)
 
-    tone = _tone_change(roi, mask_r, regions_of, sigma, scale, strength)
+    tone = _tone_change(roi, mask_r, regions_of, sigma, scale, strength, light)
     work_rows = tone.shape[0]
     level = _detail_level(roi, mask_r, sigma)
     pore_groups = []
     if pores > 0.0:
         work_cols = max(1, round(rw * scale)) if scale < 1.0 else rw
-        pore_groups = _pore_groups(regions_of((work_rows, work_cols)), rw, work_rows)
+        pore_groups = _pore_groups(regions_of((work_rows, work_cols)), rw, work_rows, grain)
     pore_amount = pores * t["pore_depth"] * max(level, t["pore_min_level"])
     edge_radius = max(1, round(SPLIT_RADIUS_PER_SIGMA * sigma))
+    tone_mid = _skin_tone(roi, mask_r, sigma) if shine > 0.0 else None
 
     result = bgr.copy()
     for top in range(0, rh, STRIP_ROWS):
@@ -880,6 +958,13 @@ def smooth_face(
             _smoothstep(colour, t["keep_colour_lo"] * level, t["keep_colour_hi"] * level))
         line = _smoothstep(amount, t["line_lo"] * level, t["line_hi"] * level)
         removed = 1.0 - texture * (1.0 - t["line_cut"] * line)
+        if tone_mid is not None:
+            # Glints: brighter than their surroundings, nearly colourless, on the brighter skin.
+            glint = (_smoothstep(luma, t["shine_lo"] * level, t["shine_hi"] * level)
+                     * (1.0 - _smoothstep(colour, t["shine_colour_lo"] * level, t["shine_colour_hi"] * level))
+                     * _smoothstep((part - high) @ _LUMA - tone_mid, t["shine_lift"],
+                                   t["shine_lift"] + t["shine_span"]))
+            removed = removed + (1.0 - removed) * (shine * glint)
 
         # A real edge is left alone completely: the tone change was worked out
         # on a blurred copy, so applying it there would soften the edge.
@@ -910,6 +995,14 @@ def _cli() -> int:
                     help="texture retention 0..1 (default 0.6)")
     ap.add_argument("-p", "--pores", type=float, default=0.0,
                     help="add synthetic pore texture 0..1 (default 0, none)")
+    ap.add_argument("--shine", type=float, default=0.0,
+                    help="reduce shine: tame bright grain on oily skin 0..1 (default 0, off)")
+    ap.add_argument("--lighting", choices=tuple(LIGHTING), default="soft",
+                    help="soft or even light such as a studio softbox (the default), or hard or patchy "
+                         "light such as on-camera flash, which evens out mottled light and shadow more")
+    ap.add_argument("--print-size", choices=tuple(PRINT_GRAIN), default="large",
+                    help="what the photo is for: a large print or screen (the default), or a small "
+                         "print such as an ID photo, which keeps coarser grain")
     ap.add_argument("--face-only", action="store_true",
                     help="treat the face only, not the neck or other body skin")
     ap.add_argument("-b", "--blemish", type=float, default=0.0,
@@ -940,7 +1033,8 @@ def _cli() -> int:
             print("Blemish model not found (models/blemish_ffhqr.onnx); skipping")
 
     out = smooth_face(healed, strength=args.strength, texture=args.texture, mask=mask,
-                      faces=faces, pores=args.pores)
+                      faces=faces, pores=args.pores, grain=PRINT_GRAIN[args.print_size],
+                      shine=args.shine, light=LIGHTING[args.lighting])
 
     out_path = args.output
     if not out_path:

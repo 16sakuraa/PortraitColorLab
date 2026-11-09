@@ -28,6 +28,9 @@ for (const n of names) {
   const t2 = performance.now();
   const withPores = pipeline.render(bgr, a, { ...params, pores: params.pores_stage });
   const t3 = performance.now();
+  const small = pipeline.render(bgr, a, { ...params, pores: params.pores_stage, grain: params.grain_stage });
+  const shiny = pipeline.render(bgr, a, { ...params, shine: params.shine_stage });
+  const hard = pipeline.render(bgr, a, { ...params, light: params.light_stage });
   const wholeMask = (m) => {
     const full = new Float32Array(bgr.rows * bgr.cols);
     for (let y = 0; y < m.h; y++) full.set(m.data.subarray(y * m.w, (y + 1) * m.w), (y + m.y0) * bgr.cols + m.x0);
@@ -45,9 +48,12 @@ for (const n of names) {
   await save(n + '.healed.png', await png(imageFromMat(st.cv, healedOnly)));
   await save(n + '.final.png', await png(imageFromMat(st.cv, final)));
   await save(n + '.pores.png', await png(imageFromMat(st.cv, withPores)));
+  await save(n + '.small.png', await png(imageFromMat(st.cv, small)));
+  await save(n + '.shine.png', await png(imageFromMat(st.cv, shiny)));
+  await save(n + '.hard.png', await png(imageFromMat(st.cv, hard)));
   results[n] = { faces: a.faces.length, healed: a.healed, analyzeMs: Math.round(t1 - t0), renderMs: Math.round(t2 - t1), poresMs: Math.round(t3 - t2) };
   log(`${n}: ${JSON.stringify(results[n])}`);
-  bgr.delete(); healedOnly.delete(); final.delete(); withPores.delete();
+  bgr.delete(); healedOnly.delete(); final.delete(); withPores.delete(); small.delete(); shiny.delete(); hard.delete();
 }
 window.parityDone = results;
 log('done');

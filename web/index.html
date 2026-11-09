@@ -22,23 +22,38 @@
            display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   header h1 { font-size: 17px; margin: 0; font-weight: 650; }
   header .tag { font-size: 12px; color: var(--muted); }
-  .controls { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin-left: auto; }
-  .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
+  .actions { display: flex; gap: 10px; margin-left: auto; }
+  .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ctl label { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
-  input[type=range] { width: 170px; accent-color: var(--accent); }
+  input[type=range] { width: 100%; margin: 4px 0; accent-color: var(--accent); }
+  select { width: 100%; font: inherit; font-size: 13px; padding: 3px 4px; border: 1px solid var(--line);
+           border-radius: 6px; background: var(--panel); color: var(--text); }
+  select:disabled { opacity: .45; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--accent);
            color: var(--accent-text); cursor: pointer; }
   button.secondary { background: var(--secondary); }
   button:disabled { opacity: .45; cursor: default; }
-  main { padding: 18px; max-width: 1600px; margin: 0 auto; }
+  /* Photos on the left, the settings in a panel on the right that stays in view. */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start;
+            padding: 18px; max-width: 1900px; margin: 0 auto; }
+  main { min-width: 0; }
+  .tools { background: var(--panel); border-radius: 12px; padding: 16px; position: sticky; top: 12px;
+           max-height: calc(100vh - 24px); overflow-y: auto; display: grid; gap: 16px; }
+  .tools section { display: grid; gap: 12px; align-content: start; }
+  .tools section + section { border-top: 1px solid var(--line); padding-top: 16px; }
+  .tools h2 { font-size: 13px; font-weight: 650; margin: 0; }
+  .tools button { justify-self: start; }
+  /* While painting, the panel holds only the brush. */
+  body.mask-editing .tools > section:not(#brushbox) { display: none; }
+  body.mask-editing .tools > #brushbox { border-top: 0; padding-top: 0; }
   .drop { border: 2px dashed var(--drop); border-radius: 12px; padding: 48px 16px; text-align: center;
           background: color-mix(in srgb, var(--panel) 60%, transparent); cursor: pointer; }
   .drop.over { border-color: var(--accent); }
   .drop p { margin: 6px 0; }
   .note { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .panel { background: var(--panel); border-radius: 12px; padding: 10px; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 6px 10px; }
   .panel img { width: 100%; border-radius: 8px; display: block; }
@@ -62,11 +77,14 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   footer { padding: 18px; text-align: center; font-size: 12px; color: var(--muted); }
   footer a { color: inherit; }
+  /* Narrower screens: the settings above the photos, in columns. */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .tools { order: -1; position: static; max-height: none; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .tools section + section { border-top: 0; padding-top: 0; }
+  }
   @media (max-width: 760px) {
     .grid { grid-template-columns: 1fr; }
-    .controls { margin-left: 0; width: 100%; }
-    .ctl { min-width: 0; flex: 1 1 140px; }
-    input[type=range] { width: 100%; }
   }
 </style>
 </head>
@@ -76,30 +94,13 @@
     <h1>Skin Smoother</h1>
     <div class="tag">Runs in your browser · photos never leave your computer</div>
   </div>
-  <div class="controls">
-    <div class="ctl">
-      <label for="blemish">Remove blemishes <span id="bval">100</span></label>
-      <input id="blemish" type="range" min="0" max="100" value="100" disabled>
-    </div>
-    <div class="ctl">
-      <label for="strength">Strength <span id="sval">60</span></label>
-      <input id="strength" type="range" min="0" max="100" value="60" disabled>
-    </div>
-    <div class="ctl">
-      <label for="texture">Keep texture <span id="tval">60</span></label>
-      <input id="texture" type="range" min="0" max="100" value="60" disabled>
-    </div>
-    <div class="ctl">
-      <label for="pores">Add pores <span id="pval">0</span></label>
-      <input id="pores" type="range" min="0" max="100" value="0" disabled>
-    </div>
-    <label class="check"><input id="faceonly" type="checkbox" disabled> Face only</label>
-    <button id="editmask" class="secondary" disabled>Edit mask</button>
-    <button id="download" disabled>Download</button>
+  <div class="actions">
     <button id="reset" class="secondary hidden">New photo</button>
+    <button id="download" disabled>Download</button>
   </div>
 </header>
 
+<div class="layout">
 <main>
   <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a photo">
     <p><strong>Click to choose a photo</strong> or drag it here</p>
@@ -116,6 +117,55 @@
   </div>
   <div class="status" id="status"></div>
 </main>
+
+<aside class="tools" aria-label="Retouch settings">
+  <section>
+    <h2>Retouch</h2>
+    <div class="ctl">
+      <label for="blemish">Remove blemishes <span id="bval">100</span></label>
+      <input id="blemish" type="range" min="0" max="100" value="100" disabled>
+    </div>
+    <div class="ctl">
+      <label for="strength">Strength <span id="sval">60</span></label>
+      <input id="strength" type="range" min="0" max="100" value="60" disabled>
+    </div>
+    <div class="ctl">
+      <label for="texture">Keep texture <span id="tval">60</span></label>
+      <input id="texture" type="range" min="0" max="100" value="60" disabled>
+    </div>
+    <div class="ctl">
+      <label for="shine" title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone.">Reduce shine <span id="rval">0</span></label>
+      <input id="shine" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <div class="ctl">
+      <label for="pores">Add pores <span id="pval">0</span></label>
+      <input id="pores" type="range" min="0" max="100" value="0" disabled>
+    </div>
+  </section>
+  <section>
+    <h2>Photo</h2>
+    <div class="ctl">
+      <label for="lighting">Lighting</label>
+      <select id="lighting" disabled title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
+        <option value="soft" selected>Soft (studio)</option>
+        <option value="hard">Hard or patchy (flash)</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="print">Print size</label>
+      <select id="print" disabled title="A small print keeps coarser grain, so the skin still has texture at that size. It looks coarser here.">
+        <option value="large" selected>Large print or screen</option>
+        <option value="small">Small print (1-inch ID)</option>
+      </select>
+    </div>
+    <label class="check"><input id="faceonly" type="checkbox" disabled> Face only</label>
+  </section>
+  <section id="brushbox">
+    <h2>Brush</h2>
+    <button id="editmask" class="secondary" disabled>Use brush</button>
+  </section>
+</aside>
+</div>
 
 <footer>
   Face detection: YuNet (OpenCV Zoo). Skin segmentation and face landmarks: Google MediaPipe selfie multiclass and Face Mesh V2 (Apache 2.0). The optional blemish network (<code>?blemish=network</code>) was trained on

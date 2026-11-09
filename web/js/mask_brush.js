@@ -1,10 +1,11 @@
 // The brush for editing the skin mask by hand: the same interface on the web page and
 // on the desktop app's page, so it imports nothing and brings its own styles.
 //
-// Pressing the page's Edit mask button tints the treated skin over the retouched
-// photo, in a larger view that zooms and pans. Strokes (see mask_edit.js for their
-// form) are shown straight away on the tint, then the page asks for a new result and
-// hands back the real mask with setMaskBytes or setMaskImage.
+// Pressing the page's brush button tints the treated skin over the retouched photo,
+// in a larger view that zooms and pans. Restore (a stroke's 'protect' mode) brings
+// back the original and Add skin smooths more, each at the Strength set. Strokes (see
+// mask_edit.js for their form) are shown straight away on the tint, then the page asks
+// for a new result and hands back the real mask with setMaskBytes or setMaskImage.
 
 const TINT = [25, 211, 197], TINT_ALPHA = 0.42, TINT_CSS = `rgba(${TINT.join(',')},${TINT_ALPHA})`;
 const MAX_ZOOM = 10, MIN_VIEW = 320, VIEW_MARGIN = 28;   // px; the view fills the window under the tools
@@ -28,6 +29,11 @@ const STYLE = `
   .mask-tools label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .mask-tools input[type=range] { width: 120px; }
   .mask-tools button { padding: 4px 10px; font-size: 12px; }
+  .mask-row { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+  body.mask-editing .mask-tools.hosted { display: grid; gap: 10px; margin: 0; }
+  .mask-tools.hosted label { justify-content: space-between; }
+  .mask-tools.hosted label.mask-check { justify-content: flex-start; }
+  .mask-tools.hosted input[type=range] { width: auto; flex: 1; min-width: 0; }
   .mask-mode { display: inline-flex; border-radius: 8px; overflow: hidden; }
   .mask-mode button { border-radius: 0; background: #6b7280; }
   .mask-mode button.on { background: #4b7bec; }
@@ -44,7 +50,10 @@ const el = (tag, props = {}, ...children) => {
 const sizeOf = (v) => 0.002 + 0.1 * (v / 100) ** 2;
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
-export function attachMaskBrush({ image, button, onChange, onModeChange = () => {} }) {
+// toolsHost: where the tools go (a side panel); without it they sit above the photo.
+// labels: the button's text when off and when painting.
+export function attachMaskBrush({ image, button, onChange, onModeChange = () => {}, toolsHost = null,
+                                  labels = ['Edit mask', 'Done editing'] }) {
   if (!document.getElementById('mask-brush-style')) {
     document.head.append(el('style', { id: 'mask-brush-style', textContent: STYLE }));
   }
@@ -57,8 +66,10 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
   const base = document.createElement('canvas');      // the mask as last received
 
   // ---------- tools ----------
-  const protectBtn = el('button', { type: 'button', textContent: 'Protect', title: 'Never smooth here, and don\'t fill spots here' });
-  const skinBtn = el('button', { type: 'button', textContent: 'Add skin', title: 'Smooth here, even if the automatic mask left it out' });
+  const protectBtn = el('button', { type: 'button', textContent: 'Restore', title: 'Bring back the original here: at 100% nothing is smoothed and no spots are filled (X switches)' });
+  const skinBtn = el('button', { type: 'button', textContent: 'Add skin', title: 'Smooth here, even if the automatic mask left it out (X switches)' });
+  const amountInput = el('input', { type: 'range', min: 5, max: 100, step: 5, value: 100, title: 'How much of the original to bring back, or how much to smooth' });
+  const amountValue = el('span', { textContent: '100%' });
   const sizeInput = el('input', { type: 'range', min: 1, max: 100, value: 24, title: 'Brush size ( [ and ] )' });
   const softInput = el('input', { type: 'range', min: 0, max: 100, value: 30, title: 'How soft the brush\'s edge is' });
   const undoBtn = el('button', { type: 'button', className: 'secondary', textContent: 'Undo', disabled: true, title: 'Undo the last stroke (Ctrl+Z)' });
@@ -67,12 +78,19 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
   const tintInput = el('input', { type: 'checkbox', checked: true, title: 'Show the tint (M)' });
   const tools = el('div', { className: 'mask-tools' },
     el('span', { className: 'mask-mode' }, protectBtn, skinBtn),
+    el('label', {}, 'Strength', amountInput, amountValue),
     el('label', {}, 'Size', sizeInput),
     el('label', {}, 'Softness', softInput),
-    undoBtn, resetBtn, fitBtn,
-    el('label', {}, tintInput, 'Show tint'),
-    el('span', { className: 'mask-hint', textContent: 'Tinted skin gets smoothed. Scroll to zoom, hold Space or the right mouse button to move around. Add skin smooths an area but doesn\'t look for spots in it.' }));
-  clip.parentElement.insertBefore(tools, clip);
+    el('span', { className: 'mask-row' }, undoBtn, resetBtn, fitBtn),
+    el('label', { className: 'mask-check' }, tintInput, 'Show tint'),
+    el('span', { className: 'mask-hint', textContent: 'Tinted skin gets smoothed. Restore brings back the original, for example around the eyes or on a mole; turn the tint off to see the result. Where strokes cross, the later one wins: 40% over 100% leaves 40%. Add skin smooths an area but doesn\'t look for spots in it. Scroll to zoom, hold Space or the right mouse button to move around.' }));
+  if (toolsHost) {
+    tools.classList.add('hosted');
+    toolsHost.append(tools);
+  } else {
+    clip.parentElement.insertBefore(tools, clip);
+  }
+  button.textContent = labels[0];
 
   // ---------- state ----------
   let editing = false, mode = 'protect', strokes = [], nextId = 1, version = 0;
@@ -106,7 +124,7 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
     if (!editing) return;
     clipW = clip.parentElement.clientWidth - 2 * parseFloat(getComputedStyle(clip.parentElement).paddingLeft || 0);
     const aspect = (image.naturalWidth || 3) / (image.naturalHeight || 4);
-    fitH = Math.max(MIN_VIEW, window.innerHeight - tools.offsetHeight - VIEW_MARGIN);
+    fitH = Math.max(MIN_VIEW, window.innerHeight - (toolsHost ? 0 : tools.offsetHeight) - VIEW_MARGIN);
     fitW = fitH * aspect;
     if (fitW > clipW) { fitW = clipW; fitH = fitW / aspect; }
     applyView();
@@ -133,6 +151,7 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
   function drawStroke(stroke) {
     const w = canvas.width, h = canvas.height, c = stroke.points, d = stroke.size * Math.max(w, h);
     ctx.save();
+    ctx.globalAlpha = stroke.amount ?? 1;   // part strength: part of the tint added or taken away
     ctx.globalCompositeOperation = stroke.mode === 'skin' ? 'source-over' : 'destination-out';
     ctx.strokeStyle = stroke.mode === 'skin' ? TINT_CSS : '#000';
     ctx.lineCap = ctx.lineJoin = 'round';
@@ -169,6 +188,8 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
     if (e.button === 0) {
       const [x, y] = position(e);
       current = { id: nextId++, mode, size: sizeOf(+sizeInput.value), soft: +softInput.value / 100, points: [x, y] };
+      const amount = +amountInput.value / 100;
+      if (amount < 1) current.amount = amount;   // full strokes stay as they always were
       drawTint();
     }
   });
@@ -212,6 +233,7 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
   protectBtn.addEventListener('click', () => setMode('protect'));
   skinBtn.addEventListener('click', () => setMode('skin'));
   sizeInput.addEventListener('input', drawCursorSize);
+  amountInput.addEventListener('input', () => { amountValue.textContent = `${amountInput.value}%`; });
   const undo = () => { if (strokes.length) { strokes = strokes.slice(0, -1); changed(); } };
   undoBtn.addEventListener('click', undo);
   const clearStrokes = () => { strokes = []; };
@@ -244,11 +266,13 @@ export function attachMaskBrush({ image, button, onChange, onModeChange = () => 
     if (on === editing) return;
     editing = on;
     document.body.classList.toggle('mask-editing', on);
-    button.textContent = on ? 'Done editing' : 'Edit mask';
+    button.textContent = on ? labels[1] : labels[0];
     zoom = 1;
     if (on) {
       fit();
-      tools.scrollIntoView({ block: 'start' });   // the tools at the top, the whole view below them
+      // The tools at the top with the whole view below them, or, with the tools in a
+      // side panel that stays in view, the view at the top.
+      (toolsHost ? clip : tools).scrollIntoView({ block: 'start' });
     } else {
       applyView();
     }

@@ -7,14 +7,17 @@ no external service, nothing taken from the original program.
 ## What it does
 
 1. Finds the faces and builds a soft **skin mask** with a segmentation model, minus
-   the eyes, eyebrows and lips, so only skin is treated and edges stay sharp.
+   the eyes, eyebrows, lips and ears, so only skin is treated and edges stay sharp.
 2. **Removes blemishes:** finds small red marks and fills them from the skin around
    them.
 3. **Edge-preserving smoothing** flattens blotches and uneven tone, sized to the
-   face and reading only from skin.
+   face and reading only from skin. **Lighting** set to hard light reaches the
+   mottled light and shadow that flash leaves, and still keeps the face's shading.
 4. **Keep texture** holds on to pore detail so the result doesn't look like plastic,
-   and leaves real edges, lashes and stray hairs alone. **Add pores** can add fine
-   synthetic pore texture on top.
+   and leaves real edges, lashes and stray hairs alone. **Reduce shine** tames the
+   bright glints of oily skin. **Add pores** can add fine synthetic pore texture
+   on top. **Print size** set to a small print keeps
+   coarser grain, the kind that still shows in a 1-inch ID photo.
 5. Blends the result back through the soft mask.
 
 Everything runs on your computer's CPU, with no GPU or service.
@@ -31,21 +34,30 @@ To start it manually instead:
 python serve.py
 ```
 
-### Fixing the mask by hand
+The settings are in the panel on the right: **Retouch** (the sliders), **Photo**
+(Lighting, Print size, Face only) and **Brush**. New image and Download are at the
+top right.
 
-If the automatic mask is wrong, press **Edit mask**. Skin that will be smoothed is
-tinted over the photo, and you paint on it:
+### The brush
 
-- **Protect** keeps an area exactly as it is: no smoothing, and no blemish fills.
+Press **Use brush** in the panel. Skin that will be smoothed is tinted over the
+photo, and you paint on it:
+
+- **Restore** brings back the original: at 100% Strength the area is kept exactly as
+  it is (no smoothing, no blemish fills); lower Strength brings back part of it, for
+  example to sharpen up around the eyes or the nostrils again. Turn the tint off
+  (`M`) to see the result.
 - **Add skin** smooths an area the mask left out, such as skin inside an eye or lip
   protection zone. It doesn't look for blemishes there.
 
-Scroll to zoom. Hold Space or the right mouse button to move around.
+Where strokes cross, the later one wins: a 40% Restore over a 100% one leaves 40%.
+Scroll to zoom. Hold Space or the right mouse button to move around. Press **Done
+with brush** to go back.
 
 | Key | What it does |
 |---|---|
 | `[` and `]` | Brush size |
-| `X` | Switch between Protect and Add skin |
+| `X` | Switch between Restore and Add skin |
 | `M` | Show or hide the tint |
 | `0` | Fit the whole photo |
 | Ctrl+Z | Undo the last stroke |
@@ -70,7 +82,13 @@ python app.py
 - **Remove blemishes** how much of each blemish fill to apply.
 - **Strength** how much to smooth.
 - **Keep texture** higher = more natural pores, lower = glossier.
+- **Reduce shine** tames bright glints on oily skin; dark pores and freckles stay
+  (0 = off).
 - **Add pores** adds fine synthetic pore texture (0 = none).
+- **Lighting** "Hard or patchy (flash)" evens out mottled light and shadow more;
+  keep "Soft (studio)" for softbox photos.
+- **Print size** "Small print (1-inch ID)" keeps coarser grain for small prints; it
+  looks coarser on screen and right in the print.
 - **Face only** leaves out the neck and other body skin.
 - Compare the Original (left) and Smoothed (right) panes live.
 - **Save…** writes the full-resolution result.
@@ -131,7 +149,9 @@ Double-click **`build_exe.bat`**. It installs the pinned packages and writes
 python smoother.py input.jpg output.jpg --blemish 1 --strength 0.6 --texture 0.6
 ```
 
-`--blemish`, `--strength`, `--texture` and `--pores` are 0..1. `--face-only` leaves
+`--blemish`, `--strength`, `--texture`, `--shine` and `--pores` are 0..1. `--print-size small`
+keeps coarser grain for small prints such as ID photos. `--lighting hard` evens out
+the mottled light and shadow of flash photos. `--face-only` leaves
 out the neck and other body skin. If no output path is given, it writes
 `input_smooth.jpg` next to the source.
 
@@ -181,7 +201,7 @@ hair, face skin, body skin, clothes and accessories. It needs OpenCV 4.10 or new
 - **Group photos:** faces close together share a run of the model, up to 8 runs. Other
   faces use the older oval mask, as do faces the model doesn't clearly see.
 - **Not pixel-perfect:** Google says so too, so the edges are snapped to the photo.
-  Google also reports lower accuracy on the darkest skin tones. Use **Edit mask** to
+  Google also reports lower accuracy on the darkest skin tones. Use the brush to
   correct anything it gets wrong.
 
 `models/face_landmarks.onnx` is Google's MediaPipe Face Mesh V2 landmark model,
@@ -189,6 +209,13 @@ converted to ONNX (Apache 2.0, see `../THIRD_PARTY_NOTICES.md`). It outlines the
 brows and lips, which smoothing leaves alone. A face it doesn't clearly see, such as a
 strong profile, uses the older finder, as do all faces if the file is missing. Up to 30
 faces use it, largest first.
+
+Its outline of the face also keeps the ears out: the band just outside the outline,
+from the top of the ear to the lobe. On a head turned away from the camera, the far
+side's outline runs over the cheek and that ear is hidden, so only the near ear is cut.
+Ears never cut into another face. A face without the outline keeps its ears: the face
+detector's box stops well short of a turned face's cheek, so it can't say where the
+ear starts.
 
 ## Face detection (optional but recommended)
 

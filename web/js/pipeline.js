@@ -9,8 +9,8 @@ import * as blemish from './blemish.js';
 import * as blemishClassic from './blemish_classic.js';
 import { buildSkinMask } from './skinmask.js';
 import { segment, skinArea } from './skin_segment.js';
-import { landmarks, zones } from './face_landmarks.js';
-import { smoothFace } from './smooth.js';
+import { landmarks, zones, earZones } from './face_landmarks.js';
+import { smoothFace, PRINT_GRAIN, LIGHTING } from './smooth.js';
 import * as maskEdit from './mask_edit.js';
 
 const LIB = new URL('../lib/', import.meta.url).href;
@@ -65,7 +65,8 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
   const points = previous ? previous.points : await landmarks(cv, ort, landmarker, bgr, faces);
   const area = seg ? skinArea(cv, seg, faces, faceOnly) : null;
   const outlines = points.map((p) => p && zones(cv, p, bgr.cols, bgr.rows));
-  const mask = buildSkinMask(cv, bgr, faces, 1.0, area, seg ? seg.covered : [], outlines);
+  const ears = points.map((p) => p && earZones(cv, p, bgr.cols, bgr.rows));
+  const mask = buildSkinMask(cv, bgr, faces, 1.0, area, seg ? seg.covered : [], outlines, ears);
   const classic = blemishEngine === 'classic';
   let corr, count;
   if (classic) ({ corr, count } = blemishClassic.correction(cv, bgr, faces, mask));
@@ -74,11 +75,16 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
   return { faces, seg, points, mask, corr, healed: count, healedUnit: classic ? 'spots' : 'faces' };
 }
 
-// params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1 }
+// params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1, shine: 0..1 (optional),
+// print: 'large' | 'small', lighting: 'soft' | 'hard' }. The parity tool passes grain and
+// light (numbers) instead of print and lighting.
 export function render(bgr, analysis, params) {
   const { cv } = state;
   const healed = blemish.apply(cv, bgr, analysis.corr, params.blemish);
-  const out = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces, params.pores);
+  const grain = params.grain ?? PRINT_GRAIN[params.print] ?? 1;
+  const light = params.light ?? LIGHTING[params.lighting] ?? 1;
+  const out = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces,
+    params.pores, grain, params.shine ?? 0, light);
   healed.delete();
   return out;
 }

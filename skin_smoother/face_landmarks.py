@@ -1,5 +1,5 @@
 """
-Eye, brow and lip outlines from a face landmark network.
+Eye, brow, lip and ear zones from a face landmark network.
 
 Google's MediaPipe Face Mesh V2 places 478 points on a face. It runs on the CPU
 through OpenCV, so no GPU or extra install is needed, and takes milliseconds per face.
@@ -8,9 +8,11 @@ It expects an upright 256x256 crop with some margin around the face, so each fac
 takes two passes: the first from the face detector's box and eyes, the second from
 the first pass's own points, which gives a tighter, straighter crop.
 
-These outlines are what smoothing has to leave alone. The older method in smoother.py
+These zones are what smoothing has to leave alone. The older method in smoother.py
 (eye_mask, brow_mask, lip_mask) takes over, face by face, where the model doesn't
-clearly see a face, and for every face if the model file is missing.
+clearly see a face, and for every face if the model file is missing. Ears have no
+older method: without the face's outline nothing shows where the cheek ends and the
+ear begins.
 
 The model file is models/face_landmarks.onnx (next to the program, or bundled inside
 the .exe).
@@ -40,12 +42,31 @@ BROW_R = (70, 63, 105, 66, 107, 55, 65, 52, 53, 46)
 BROW_L = (300, 293, 334, 296, 336, 285, 295, 282, 283, 276)
 EYE_CORNERS_R = (33, 133)
 EYE_CORNERS_L = (263, 362)
+# The face's outline, clockwise from the top of the forehead: down the person's left
+# side to the chin, then up their right.
+OUTLINE = (10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
+           152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109)
+OUTLINE_L = OUTLINE[1:18]   # the person's left half, between the top and the chin
+OUTLINE_R = OUTLINE[19:]
+# The part of each side of the outline an ear joins, from about the top of the ear
+# down to its lobe, with the next point on at each end; and the outline's widest
+# point, beside the ear.
+EAR_R = (54, 21, 162, 127, 234, 93, 132, 58)
+EAR_L = (284, 251, 389, 356, 454, 323, 361, 288)
+SIDE_R, SIDE_L = 234, 454
 
 TUNE = {
     "crop_side": 1.5,     # a crop's side, times the face's size: the model wants 25% margin each way
     "eye_margin": 0.05,   # how far past each outline to protect, a fraction of the distance between the eyes
     "brow_margin": 0.03,
     "lip_margin": 0.01,
+    "ear_gap": 0.02,      # skin left between the outline and an ear zone, same units
+    "ear_reach": 0.7,     # how far past the outline an ear zone reaches: ears measured up to 0.55
+    "ear_ends": 0.5,      # how far an ear zone runs on toward the next point at each end, for high
+                          # ear tips and long lobes
+    "ear_turn": 0.75,     # a side this much narrower than the other is turned away: its outline
+                          # runs over the cheek and its ear is hidden, so it gets no ear zone
+    "far_cheek": 0.35,    # how far the cheek on such a side can reach past the outline: measured up to 0.35
 }
 
 _net = None
@@ -183,3 +204,57 @@ def zones(pts: np.ndarray, w: int, h: int) -> list:
         cv2.fillPoly(mask, [poly - np.array([x0, y0], np.int32)], 255)
         out.append((cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))), (x0, y0)))
     return out
+
+
+def _filled(points: np.ndarray, w: int, h: int):
+    """A polygon (float photo pixels) filled, as (uint8 mask, (x0, y0)), or None off the photo."""
+    poly = np.round(points).astype(np.int32)
+    x0, y0 = max(0, int(poly[:, 0].min())), max(0, int(poly[:, 1].min()))
+    x1, y1 = min(w, int(poly[:, 0].max()) + 1), min(h, int(poly[:, 1].max()) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(mask, [poly - np.array([x0, y0], np.int32)], 255)
+    return mask, (x0, y0)
+
+
+def ear_zones(pts: np.ndarray, w: int, h: int) -> tuple[list, tuple | None]:
+    """One face's ear zones and its inside, in a w x h photo.
+
+    An ear zone lies just outside the outline, from about the top of the ear down to
+    its lobe, and reaches as far out as an ear can. A side turned away from the camera
+    gets none: its outline runs over the cheek there, short of the cheek's edge, and
+    its ear is hidden. The inside is the outline, widened on such a side to where that
+    cheek can reach, so that another face's ear zone can't cut it.
+
+    Returns ([(uint8 mask, (x0, y0))], (uint8 mask, (x0, y0)) or None).
+    """
+    t = TUNE
+    eye_r, eye_l = _eye_centres(pts)
+    eye_d = float(np.hypot(eye_l[0] - eye_r[0], eye_l[1] - eye_r[1]))
+    if not eye_d > 0:
+        return [], None
+    ax, ay = (eye_l[0] - eye_r[0]) / eye_d, (eye_l[1] - eye_r[1]) / eye_d   # along the eyes, to the person's left
+    mx, my = (eye_r[0] + eye_l[0]) / 2, (eye_r[1] + eye_l[1]) / 2
+    # How far each side of the outline is from between the eyes: the side turned away is narrower.
+    width_r = -((pts[SIDE_R, 0] - mx) * ax + (pts[SIDE_R, 1] - my) * ay)
+    width_l = (pts[SIDE_L, 0] - mx) * ax + (pts[SIDE_L, 1] - my) * ay
+    widest = max(width_r, width_l)
+    zones, edge = [], pts[list(OUTLINE)].copy()
+    for ear, half, width, out in ((EAR_R, OUTLINE_R, width_r, -1.0), (EAR_L, OUTLINE_L, width_l, 1.0)):
+        ox, oy = out * ax, out * ay       # outwards on this side
+        if width < t["ear_turn"] * widest:
+            for k, i in enumerate(OUTLINE):
+                if i in half:
+                    edge[k, 0] = pts[i, 0] + t["far_cheek"] * eye_d * ox
+                    edge[k, 1] = pts[i, 1] + t["far_cheek"] * eye_d * oy
+            continue
+        line = pts[list(ear)]
+        line[0] = line[1] + t["ear_ends"] * (line[0] - line[1])
+        line[-1] = line[-2] + t["ear_ends"] * (line[-1] - line[-2])
+        near = np.stack([line[:, 0] + t["ear_gap"] * eye_d * ox, line[:, 1] + t["ear_gap"] * eye_d * oy], axis=1)
+        far = np.stack([line[:, 0] + t["ear_reach"] * eye_d * ox, line[:, 1] + t["ear_reach"] * eye_d * oy], axis=1)
+        zone = _filled(np.concatenate([near, far[::-1]]), w, h)
+        if zone is not None:
+            zones.append(zone)
+    return zones, _filled(edge, w, h)

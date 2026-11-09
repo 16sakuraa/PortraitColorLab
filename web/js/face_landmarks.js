@@ -1,4 +1,4 @@
-// Eye, brow and lip outlines from a face landmark network - a port of
+// Eye, brow, lip and ear zones from a face landmark network - a port of
 // skin_smoother/face_landmarks.py.
 //
 // Google's MediaPipe Face Mesh V2 places 478 points on a face. It expects an upright
@@ -6,9 +6,10 @@
 // first from the face detector's box and eyes, the second from the first pass's own
 // points, which gives a tighter, straighter crop.
 //
-// landmarks() runs the model once per photo. zones() is cheap, so Face only can switch
-// without running the model again. A face without points uses the older method in
-// skinmask.js (eyeMask, browMask, lipMask).
+// landmarks() runs the model once per photo. zones() and earZones() are cheap, so Face
+// only can switch without running the model again. A face without points uses the older
+// method in skinmask.js (eyeMask, browMask, lipMask) and keeps its ears: without the
+// face's outline nothing shows where the cheek ends and the ear begins.
 //
 // Allocating a Mat can move the WebAssembly heap, so views like mat.data are read
 // after the allocations they follow.
@@ -24,6 +25,16 @@ const EYE_R = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160
 const EYE_L = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
 const BROW_R = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46];
 const BROW_L = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276];
+// The face's outline, clockwise from the top of the forehead: down the person's left
+// side to the chin, then up their right.
+const OUTLINE = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
+  152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+const OUTLINE_L = OUTLINE.slice(1, 18), OUTLINE_R = OUTLINE.slice(19);
+// The part of each side of the outline an ear joins, from about the top of the ear down
+// to its lobe, with the next point on at each end; and the outline's widest point.
+const EAR_R = [54, 21, 162, 127, 234, 93, 132, 58];
+const EAR_L = [284, 251, 389, 356, 454, 323, 361, 288];
+const SIDE_R = 234, SIDE_L = 454;
 
 // Same settings as face_landmarks.TUNE; see the notes there.
 export const TUNE = {
@@ -31,6 +42,11 @@ export const TUNE = {
   eye_margin: 0.05,
   brow_margin: 0.03,
   lip_margin: 0.01,
+  ear_gap: 0.02,
+  ear_reach: 0.7,
+  ear_ends: 0.5,
+  ear_turn: 0.75,
+  far_cheek: 0.35,
 };
 
 // Runs the model on a square around (cx, cy), turned by angle (radians). Returns
@@ -146,4 +162,63 @@ export function zones(cv, pts, w, h) {
     out.push({ mask, x0, y0 });
   }
   return out;
+}
+
+// A polygon (photo pixels: x0, y0, x1, y1, ...) filled, as { mask, x0, y0 }, or null off
+// the photo.
+function fillPolygon(cv, poly, w, h) {
+  const n = poly.length / 2, xs = [], ys = [];
+  for (let k = 0; k < n; k++) { xs.push(pyRound(poly[2 * k])); ys.push(pyRound(poly[2 * k + 1])); }
+  const x0 = Math.max(0, Math.min(...xs)), y0 = Math.max(0, Math.min(...ys));
+  const x1 = Math.min(w, Math.max(...xs) + 1), y1 = Math.min(h, Math.max(...ys) + 1);
+  if (x1 <= x0 || y1 <= y0) return null;
+  const mask = cv.Mat.zeros(y1 - y0, x1 - x0, cv.CV_8U);
+  const m = cv.matFromArray(n, 1, cv.CV_32SC2, xs.flatMap((x, k) => [x - x0, ys[k] - y0]));
+  const polys = new cv.MatVector();
+  polys.push_back(m);
+  cv.fillPoly(mask, polys, new cv.Scalar(255));
+  m.delete(); polys.delete();
+  return { mask, x0, y0 };
+}
+
+// One face's ear zones and its inside, in a w x h photo: { zones: [{ mask, x0, y0 }],
+// inside: { mask, x0, y0 } or null }. The caller deletes the masks.
+//
+// An ear zone lies just outside the outline, from about the top of the ear down to its
+// lobe, and reaches as far out as an ear can. A side turned away from the camera gets
+// none: its outline runs over the cheek there, short of the cheek's edge, and its ear is
+// hidden. The inside is the outline, widened on such a side to where that cheek can
+// reach, so that another face's ear zone can't cut it.
+export function earZones(cv, pts, w, h) {
+  const t = TUNE, [rx, ry, lx, ly] = eyeCentres(pts);
+  const eyeD = Math.hypot(lx - rx, ly - ry);
+  if (!(eyeD > 0)) return { zones: [], inside: null };
+  const ax = (lx - rx) / eyeD, ay = (ly - ry) / eyeD;   // along the eyes, to the person's left
+  const mx = (rx + lx) / 2, my = (ry + ly) / 2;
+  // How far each side of the outline is from between the eyes: the side turned away is narrower.
+  const widthR = -((pts[2 * SIDE_R] - mx) * ax + (pts[2 * SIDE_R + 1] - my) * ay);
+  const widthL = (pts[2 * SIDE_L] - mx) * ax + (pts[2 * SIDE_L + 1] - my) * ay;
+  const widest = Math.max(widthR, widthL);
+  const zones = [], edge = OUTLINE.flatMap((i) => [pts[2 * i], pts[2 * i + 1]]);
+  for (const [ear, half, width, out] of [[EAR_R, OUTLINE_R, widthR, -1], [EAR_L, OUTLINE_L, widthL, 1]]) {
+    const ox = out * ax, oy = out * ay;        // outwards on this side
+    if (width < t.ear_turn * widest) {
+      OUTLINE.forEach((i, k) => {
+        if (!half.includes(i)) return;
+        edge[2 * k] = pts[2 * i] + t.far_cheek * eyeD * ox;
+        edge[2 * k + 1] = pts[2 * i + 1] + t.far_cheek * eyeD * oy;
+      });
+      continue;
+    }
+    const line = ear.flatMap((i) => [pts[2 * i], pts[2 * i + 1]]), n = ear.length;
+    for (const [end, next] of [[0, 1], [n - 1, n - 2]]) {
+      for (const c of [0, 1]) line[2 * end + c] = line[2 * next + c] + t.ear_ends * (line[2 * end + c] - line[2 * next + c]);
+    }
+    const poly = [];
+    for (let k = 0; k < n; k++) poly.push(line[2 * k] + t.ear_gap * eyeD * ox, line[2 * k + 1] + t.ear_gap * eyeD * oy);
+    for (let k = n - 1; k >= 0; k--) poly.push(line[2 * k] + t.ear_reach * eyeD * ox, line[2 * k + 1] + t.ear_reach * eyeD * oy);
+    const zone = fillPolygon(cv, poly, w, h);
+    if (zone) zones.push(zone);
+  }
+  return { zones, inside: fillPolygon(cv, edge, w, h) };
 }

@@ -23,6 +23,10 @@ import blemish
 import photo_io
 
 PREVIEW_MAX = 640  # longest edge of each preview pane
+# Print size choices -> smoother.PRINT_GRAIN keys. A small print keeps coarser grain.
+PRINT_SIZES = {"Large print or screen": "large", "Small print (1-inch ID)": "small"}
+# Lighting choices -> smoother.LIGHTING keys. Hard light evens out mottled light and shadow more.
+LIGHTINGS = {"Soft (studio)": "soft", "Hard or patchy (flash)": "hard"}
 
 
 def to_photo(bgr) -> ImageTk.PhotoImage:
@@ -79,11 +83,31 @@ class App(tk.Tk):
                        command=self._on_slider, length=200)
         s2.pack(side=tk.LEFT, padx=(4, 16))
 
+        ttk.Label(bar, text="Reduce shine").pack(side=tk.LEFT)
+        self.shine = tk.DoubleVar(value=0)
+        s_shine = ttk.Scale(bar, from_=0, to=100, variable=self.shine,
+                            command=self._on_slider, length=160)
+        s_shine.pack(side=tk.LEFT, padx=(4, 16))
+
         ttk.Label(bar, text="Add pores").pack(side=tk.LEFT)
         self.pores = tk.DoubleVar(value=0)
         s3 = ttk.Scale(bar, from_=0, to=100, variable=self.pores,
                        command=self._on_slider, length=160)
         s3.pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(bar, text="Lighting").pack(side=tk.LEFT)
+        self.lighting = tk.StringVar(value=next(iter(LIGHTINGS)))
+        lights = ttk.Combobox(bar, textvariable=self.lighting, values=list(LIGHTINGS),
+                              state="readonly", width=20)
+        lights.bind("<<ComboboxSelected>>", self._on_slider)
+        lights.pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(bar, text="Print size").pack(side=tk.LEFT)
+        self.print_size = tk.StringVar(value=next(iter(PRINT_SIZES)))
+        sizes = ttk.Combobox(bar, textvariable=self.print_size, values=list(PRINT_SIZES),
+                             state="readonly", width=22)
+        sizes.bind("<<ComboboxSelected>>", self._on_slider)
+        sizes.pack(side=tk.LEFT, padx=(4, 16))
 
         self.face_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text="Face only", variable=self.face_only,
@@ -158,6 +182,12 @@ class App(tk.Tk):
         self._analyse_preview()
         self._render_preview()
 
+    def _grain(self) -> float:
+        return smoother.PRINT_GRAIN[PRINT_SIZES[self.print_size.get()]]
+
+    def _light(self) -> float:
+        return smoother.LIGHTING[LIGHTINGS[self.lighting.get()]]
+
     def _on_slider(self, _evt=None):
         if self.preview_bgr is None:
             return
@@ -175,7 +205,8 @@ class App(tk.Tk):
                              self.blemish.get() / 100.0)
         out = smoother.smooth_face(base, strength=s, texture=t,
                                    mask=self.preview_mask, faces=self.preview_faces,
-                                   pores=self.pores.get() / 100.0)
+                                   pores=self.pores.get() / 100.0, grain=self._grain(),
+                                   shine=self.shine.get() / 100.0, light=self._light())
         self._smooth_photo = to_photo(out)
         self.smooth_label.config(image=self._smooth_photo)
 
@@ -199,6 +230,9 @@ class App(tk.Tk):
         s = self.strength.get() / 100.0
         t = self.texture.get() / 100.0
         p = self.pores.get() / 100.0
+        g = self._grain()
+        sh = self.shine.get() / 100.0
+        li = self._light()
 
         b = self.blemish.get() / 100.0
         face_only = self.face_only.get()
@@ -209,7 +243,8 @@ class App(tk.Tk):
             mask = smoother.build_skin_mask(self.full_bgr, faces=faces, face_only=face_only)
             corr, _ = blemish.correction(self.full_bgr, faces, mask)
             base = blemish.apply(self.full_bgr, corr, b)
-            out = smoother.smooth_face(base, strength=s, texture=t, mask=mask, faces=faces, pores=p)
+            out = smoother.smooth_face(base, strength=s, texture=t, mask=mask, faces=faces, pores=p, grain=g,
+                                       shine=sh, light=li)
             ok = photo_io.write(path, out, info)
             self.after(0, lambda: self._save_done(ok, path))
 

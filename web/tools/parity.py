@@ -17,6 +17,9 @@ Stages compared, all with Remove blemishes = 1, Strength = 0.6, Keep texture
   healed     after blemish removal             PSNR, % of pixels that differ
   final      after smoothing                   PSNR, % of pixels that differ
   pores      after smoothing with Add pores    PSNR, % of pixels that differ
+  small      as pores, for a small print (coarser grain)  PSNR, % of pixels that differ
+  shine      after smoothing with Reduce shine  PSNR, % of pixels that differ
+  hard       after smoothing for hard lighting   PSNR, % of pixels that differ
   brush      after smoothing, with brush strokes  PSNR, % of pixels that differ
              (the mask's own difference is added to the worst mask difference)
 PSNR above ~45 dB is invisible; "identical" means every pixel matches. A mean
@@ -45,12 +48,18 @@ import mask_edit  # noqa: E402
 
 PARAMS = {"blemish": 1.0, "strength": 0.6, "texture": 0.6, "pores": 0.0}
 PORES_STAGE = 1.0   # the pores stage's Add pores value: the strongest, so differences show
+GRAIN_STAGE = smoother.PRINT_GRAIN["small"]   # the small stage's grain, with Add pores at PORES_STAGE
+SHINE_STAGE = 1.0   # the shine stage's Reduce shine value: the strongest, so differences show
+LIGHT_STAGE = smoother.LIGHTING["hard"]   # the hard stage's lighting
 # The brush stage's strokes: some hard, some soft, crossing, across the middle of the photo.
 BRUSH_STROKES = [
     {"id": 1, "mode": "protect", "size": 0.03, "soft": 0.3, "points": [0.3, 0.42, 0.5, 0.45, 0.7, 0.42]},
     {"id": 2, "mode": "skin", "size": 0.05, "soft": 0.5, "points": [0.2, 0.7, 0.45, 0.72, 0.6, 0.8, 0.8, 0.82]},
     {"id": 3, "mode": "protect", "size": 0.012, "soft": 0.0, "points": [0.5, 0.3, 0.52, 0.75]},
     {"id": 4, "mode": "skin", "size": 0.02, "soft": 0.2, "points": [0.1234, 0.1234]},
+    # Part-strength Restore and Add skin, crossing the strokes above.
+    {"id": 5, "mode": "protect", "size": 0.04, "soft": 0.4, "amount": 0.4, "points": [0.25, 0.55, 0.75, 0.5]},
+    {"id": 6, "mode": "skin", "size": 0.03, "soft": 0.2, "amount": 0.6, "points": [0.4, 0.2, 0.45, 0.9]},
 ]
 
 
@@ -70,6 +79,12 @@ def ref() -> None:
         healed = blemish.apply(img, corr, PARAMS["blemish"])
         final = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PARAMS["pores"])
         with_pores = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PORES_STAGE)
+        small = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PORES_STAGE,
+                                     GRAIN_STAGE)
+        shiny = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PARAMS["pores"],
+                                     shine=SHINE_STAGE)
+        hard = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PARAMS["pores"],
+                                    light=LIGHT_STAGE)
         region = mask_edit.region_of(mask_edit.layer_from(BRUSH_STROKES, img.shape[1], img.shape[0]), img.shape[1], img.shape[0])
         brushed_mask = mask_edit.apply_to_mask(mask, region)
         brushed = smoother.smooth_face(blemish.apply(img, mask_edit.apply_to_correction(corr, region), PARAMS["blemish"]),
@@ -79,10 +94,16 @@ def ref() -> None:
         cv2.imwrite(os.path.join(REF, n + ".healed.png"), healed)
         cv2.imwrite(os.path.join(REF, n + ".final.png"), final)
         cv2.imwrite(os.path.join(REF, n + ".pores.png"), with_pores)
+        cv2.imwrite(os.path.join(REF, n + ".small.png"), small)
+        cv2.imwrite(os.path.join(REF, n + ".shine.png"), shiny)
+        cv2.imwrite(os.path.join(REF, n + ".hard.png"), hard)
         cv2.imwrite(os.path.join(REF, n + ".brush.png"), brushed)
         print(f"{n}: {blemish.count_text(count)}")
     with open(os.path.join(REF, "params.json"), "w") as fh:
-        json.dump({**PARAMS, "pores_stage": PORES_STAGE, "brush_strokes": BRUSH_STROKES, "blemish_engine": blemish.ENGINE}, fh)
+        json.dump({**PARAMS, "pores_stage": PORES_STAGE, "grain_stage": GRAIN_STAGE, "shine_stage": SHINE_STAGE,
+                   "light_stage": LIGHT_STAGE,
+                   "brush_strokes": BRUSH_STROKES,
+                   "blemish_engine": blemish.ENGINE}, fh)
 
 
 def _psnr(a, b):
@@ -93,7 +114,8 @@ def _psnr(a, b):
 def compare() -> int:
     worst = float("inf")
     worst_mask = 0.0
-    print(f"{'image':10s} {'mask max/mean diff':>20s} {'face only':>20s} {'healed':>24s} {'final':>24s} {'pores':>24s} {'brush':>24s}")
+    print(f"{'image':10s} {'mask max/mean diff':>20s} {'face only':>20s} {'healed':>24s} {'final':>24s} {'pores':>24s} "
+          f"{'small':>24s} {'shine':>24s} {'hard':>24s} {'brush':>24s}")
     for n in names():
         img = cv2.imread(os.path.join(TEST, n + ".png"))
         h, w = img.shape[:2]
@@ -109,7 +131,7 @@ def compare() -> int:
         except FileNotFoundError:
             print(f"{n:10s} (missing browser output)")
             continue
-        for stage in ("healed", "final", "pores", "brush"):
+        for stage in ("healed", "final", "pores", "small", "shine", "hard", "brush"):
             a = cv2.imread(os.path.join(REF, f"{n}.{stage}.png"))
             b = cv2.imread(os.path.join(OUT, f"{n}.{stage}.png"))
             p = _psnr(a, b)
@@ -117,8 +139,9 @@ def compare() -> int:
             cells.append("identical" if p == float("inf") else f"{p:5.1f} dB, {diff:5.2f}% px")
             if stage != "healed":
                 worst = min(worst, p)
-        print(f"{n:10s} {cells[0]:>20s} {cells[1]:>20s} {cells[2]:>24s} {cells[3]:>24s} {cells[4]:>24s} {cells[5]:>24s}")
-    print(f"worst final or pores PSNR: {worst:.1f} dB; worst mean mask difference: {worst_mask:.5f}")
+        print(f"{n:10s} {cells[0]:>20s} {cells[1]:>20s} {cells[2]:>24s} {cells[3]:>24s} {cells[4]:>24s} "
+              f"{cells[5]:>24s} {cells[6]:>24s} {cells[7]:>24s} {cells[8]:>24s}")
+    print(f"worst smoothing-stage PSNR: {worst:.1f} dB; worst mean mask difference: {worst_mask:.5f}")
     return 0
 
 

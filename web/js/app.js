@@ -11,6 +11,8 @@ const brush = attachMaskBrush({
   button: $('editmask'),
   onChange: () => requestRender(),
   onModeChange: (editing) => { if (editing) { loupe.hide(); requestRender(); } },
+  toolsHost: $('brushbox'),
+  labels: ['Use brush', 'Done with brush'],
 });
 const loupe = attachLoupe([$('before'), $('after')]);
 
@@ -39,14 +41,17 @@ const params = () => ({
   blemish: +$('blemish').value / 100,
   strength: +$('strength').value / 100,
   texture: +$('texture').value / 100,
+  shine: +$('shine').value / 100,
   pores: +$('pores').value / 100,
+  print: $('print').value,
+  lighting: $('lighting').value,
   faceOnly: $('faceonly').checked,
   strokes: brush.strokes,
   wantMask: brush.editing,
 });
 
 function setControls(enabled) {
-  for (const id of ['blemish', 'strength', 'texture', 'pores', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
+  for (const id of ['blemish', 'strength', 'texture', 'shine', 'pores', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
 let summary = '', opened = null;
@@ -142,11 +147,13 @@ $('drop').addEventListener('dragleave', () => $('drop').classList.remove('over')
 $('drop').addEventListener('drop', (e) => { e.preventDefault(); $('drop').classList.remove('over'); openFile(e.dataTransfer.files[0]); });
 $('file').addEventListener('change', (e) => openFile(e.target.files[0]));
 
-for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['pores', 'pval']]) {
+for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['shine', 'rval'], ['pores', 'pval']]) {
   $(id).addEventListener('input', () => { $(label).textContent = $(id).value; scheduleRender(); });
 }
 
 $('faceonly').addEventListener('change', scheduleRender);
+$('print').addEventListener('change', scheduleRender);
+$('lighting').addEventListener('change', scheduleRender);
 
 $('download').addEventListener('click', () => {
   setControls(false);

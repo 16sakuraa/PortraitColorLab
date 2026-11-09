@@ -258,6 +258,140 @@ def test_small_faces_get_faint_pores():
     assert strength_of(small) < strength_of(FACE)
 
 
+def mottled_photo(h: int = 900, w: int = 1000, seed: int = 3) -> np.ndarray:
+    """Skin whose grain is a few pixels across: grain a small print still shows."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    grain = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 2.5)
+    tone = 165 + 25 * np.sin(xx / 170) * np.cos(yy / 210) + grain * (6 / grain.std())
+    return np.clip(np.dstack([tone * 0.72, tone * 0.83, tone]), 0, 255).astype(np.uint8)
+
+
+def test_large_print_is_the_default():
+    img = skin_photo()
+    mask = oval_mask()
+    plain = smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5)
+    large = smoother.PRINT_GRAIN["large"]
+    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=large), plain)
+    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, grain=0.3), plain), \
+        "grain below 1 counts as 1"
+
+
+def test_small_print_keeps_the_grain_the_print_shows():
+    img = mottled_photo()
+    mask = oval_mask()
+    shrink = 400 / 154   # FACE is 400 px wide; a 1-inch ID print's face is about 154 px at 300 dpi
+    a, b = int(350 / shrink), int(550 / shrink)
+    def printed_grain(out):
+        small = cv2.resize(out, None, fx=1 / shrink, fy=1 / shrink, interpolation=cv2.INTER_AREA)
+        y = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        return (y - cv2.GaussianBlur(y, (0, 0), 1.5))[a:b, a:b].std()
+    large = printed_grain(smoother.smooth_face(img, 1.0, 0.6, mask, FACE))
+    small = printed_grain(smoother.smooth_face(img, 1.0, 0.6, mask, FACE, grain=smoother.PRINT_GRAIN["small"]))
+    assert small > large * 1.05, f"small print {small:.2f} vs large {large:.2f}"
+    assert small < printed_grain(img), "the small print is still smoothed"
+
+
+def test_small_print_makes_pores_coarser():
+    img = skin_photo()
+    mask = oval_mask()
+    def coarse_share(grain):
+        without = smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.0, grain=grain).astype(np.float32)
+        added = smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 1.0, grain=grain).astype(np.float32) - without
+        d = added.mean(axis=2)[350:550, 350:550]
+        return cv2.GaussianBlur(d, (0, 0), 2).std() / d.std()
+    assert coarse_share(smoother.PRINT_GRAIN["small"]) > coarse_share(1.0)
+
+
+def shiny_photo(h: int = 900, w: int = 1000, seed: int = 4):
+    """Skin from darker (left) to brighter (right), dotted with white specks and,
+    as bright but coloured, reddish ones. Returns the photo and both specks' (y, x)."""
+    rng = np.random.default_rng(seed)
+    xx = np.mgrid[0:h, 0:w][1].astype(np.float32)
+    tone = 120 + 70 * np.clip((xx - 240) / 520, 0, 1) + rng.normal(0, 2, (h, w))
+    img = np.dstack([tone * 0.72, tone * 0.83, tone]).astype(np.float32)
+    grid = np.array([(y, x) for y in range(150, 760, 9) for x in range(250, 760, 9)])
+    white, red = grid[0::2], grid[1::2]
+    img[white[:, 0], white[:, 1]] += 4.0
+    img[red[:, 0], red[:, 1]] += np.array([2.5, 2.5, 7.5], np.float32)
+    return np.clip(np.round(img), 0, 255).astype(np.uint8), white, red
+
+
+def speck_left(out, specks, mask) -> float:
+    """How far the specks on the bright side still stand out, in levels."""
+    y = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    lift = y - cv2.GaussianBlur(y, (0, 0), 3)
+    on = specks[(specks[:, 1] > 620) & (mask[specks[:, 0], specks[:, 1]] > 0.99)]
+    return float(lift[on[:, 0], on[:, 1]].mean())
+
+
+def test_reduce_shine_is_off_by_default():
+    img = skin_photo()
+    mask = oval_mask()
+    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5, shine=0.0),
+                          smoother.smooth_face(img, 0.8, 0.6, mask, FACE, 0.5))
+
+
+def test_reduce_shine_tames_white_specks_on_bright_skin():
+    img, white, _ = shiny_photo()
+    mask = oval_mask()
+    before = speck_left(smoother.smooth_face(img, 1.0, 0.6, mask, FACE), white, mask)
+    after = speck_left(smoother.smooth_face(img, 1.0, 0.6, mask, FACE, shine=1.0), white, mask)
+    assert after < 0.75 * before, f"white specks {before:.2f} -> {after:.2f} levels"
+
+
+def test_reduce_shine_leaves_coloured_specks_dark_skin_and_dark_pores():
+    img, _, red = shiny_photo()
+    mask = oval_mask()
+    off = smoother.smooth_face(img, 1.0, 0.6, mask, FACE)
+    on = smoother.smooth_face(img, 1.0, 0.6, mask, FACE, shine=1.0)
+    assert speck_left(on, red, mask) > 0.9 * speck_left(off, red, mask), "coloured specks are not glints"
+    sigma = float(FACE[0, 2]) * smoother.TUNE["split"]
+    part, high = smoother._detail_strip(img, 0, img.shape[0], sigma)
+    usual = smoother._skin_tone(img, mask, sigma) + smoother.TUNE["shine_lift"]
+    duller = ((part - high) @ smoother._LUMA) < usual - 0.01
+    assert duller[mask > 0.99].mean() > 0.3, "the photo should have plenty of skin at or below its usual tone"
+    assert np.array_equal(on[duller], off[duller]), "skin no brighter than the face's usual tone has no shine"
+    darker = (high @ smoother._LUMA) < 0
+    assert np.array_equal(on[darker], off[darker]), "anything darker than its surroundings is left alone"
+
+
+def mottled_light_photo(h: int = 900, w: int = 1000, seed: int = 5) -> np.ndarray:
+    """Broad shading, mottled light and shadow a few millimetres across (hard
+    light, at FACE's size), and fine grain."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    n = rng.normal(0, 1, (h, w)).astype(np.float32)
+    patches = cv2.GaussianBlur(n, (0, 0), 5) - cv2.GaussianBlur(n, (0, 0), 16)
+    tone = 160 + 25 * np.sin(xx / 170) * np.cos(yy / 210) + patches * (6 / patches.std()) \
+        + rng.normal(0, 1.5, (h, w))
+    return np.clip(np.dstack([tone * 0.72, tone * 0.83, tone]), 0, 255).astype(np.uint8)
+
+
+def test_soft_lighting_is_the_default():
+    img = skin_photo()
+    mask = oval_mask()
+    assert np.array_equal(smoother.smooth_face(img, 0.8, 0.6, mask, FACE, light=smoother.LIGHTING["soft"]),
+                          smoother.smooth_face(img, 0.8, 0.6, mask, FACE))
+
+
+def test_hard_lighting_evens_mottled_light_and_keeps_shading():
+    img = mottled_light_photo()
+    mask = oval_mask()
+    mm = float(FACE[0, 2]) / 150   # FACE is about 15 cm wide
+    core = cv2.erode((mask > 0.99).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+    def band(out, lo, hi):
+        y = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        return (cv2.GaussianBlur(y, (0, 0), lo * mm) - cv2.GaussianBlur(y, (0, 0), hi * mm))[core].std()
+    soft = smoother.smooth_face(img, 1.0, 0.6, mask, FACE)
+    hard = smoother.smooth_face(img, 1.0, 0.6, mask, FACE, light=smoother.LIGHTING["hard"])
+    patches = band(img, 3, 10)
+    assert band(hard, 3, 10) < 0.8 * band(soft, 3, 10) < 0.8 * patches, \
+        f"patches kept: soft {band(soft, 3, 10) / patches:.2f}, hard {band(hard, 3, 10) / patches:.2f}"
+    shading = band(img, 10, 60)
+    assert band(hard, 10, 60) > 0.98 * shading, "the face's shading stays, so it doesn't look puffy"
+
+
 def test_mixed_face_sizes_get_their_own_pores():
     img = skin_photo()
     mask = oval_mask()
@@ -287,6 +421,22 @@ def test_protect_clears_the_mask_and_add_skin_fills_it():
     assert protected[150, 200] < 0.02 and protected[20, 20] == 1.0
     added = edited_mask([stroke("skin", 0.5, 0.5)], base=0.0)
     assert added[150, 200] > 0.98 and added[20, 20] == 0.0
+
+
+def test_restore_at_part_strength_brings_back_that_share():
+    full = stroke("protect", 0.5, 0.5)
+    assert np.array_equal(edited_mask([{**full, "amount": 1.0}], base=1.0), edited_mask([full], base=1.0)), \
+        "a stroke without an amount is a full one"
+    part = edited_mask([{**full, "amount": 0.4}], base=1.0)
+    assert abs(part[150, 200] - 0.6) < 0.01 and part[20, 20] == 1.0, "40% restored leaves 60% of the smoothing"
+    layer = mask_edit.layer_from([{**full, "amount": 0.4}], 400, 300)
+    corr = (0, 0, np.ones((300, 400, 3), np.float32))
+    _, _, out = mask_edit.apply_to_correction(corr, mask_edit.region_of(layer, 400, 300))
+    assert abs(out[150, 200, 0] - 0.6) < 0.01, "and 60% of the spot fills"
+    over = edited_mask([full, {**full, "amount": 0.4}], base=1.0)
+    assert abs(over[150, 200] - 0.6) < 0.01, "a later stroke wins: 40% over 100% leaves 40%"
+    added = edited_mask([{**stroke("skin", 0.5, 0.5), "amount": 0.5}], base=0.0)
+    assert abs(added[150, 200] - 0.5) < 0.01, "Add skin at half strength"
 
 
 def test_a_later_stroke_wins_where_they_cross():
@@ -533,7 +683,8 @@ def test_model_scores_add_up_and_cover_the_region():
 
 
 def outline_points() -> np.ndarray:
-    """Landmarks with each feature a circle of radius 30: eyes 200 px apart."""
+    """Landmarks with each feature a circle of radius 30: eyes 200 px apart. The face's
+    outline is an ellipse 500 px wide, its sides at x 154 and 646 level with the eyes."""
     pts = np.zeros((face_landmarks.POINTS, 2), np.float64)
     for ids, (cx, cy) in ((face_landmarks.EYE_R, (300, 300)), (face_landmarks.EYE_L, (500, 300)),
                           (face_landmarks.BROW_R, (300, 200)), (face_landmarks.BROW_L, (500, 200)),
@@ -544,6 +695,18 @@ def outline_points() -> np.ndarray:
     # The corners that set the eyes' distance, kept inside their circles.
     pts[list(face_landmarks.EYE_CORNERS_R)] = (270, 300), (330, 300)
     pts[list(face_landmarks.EYE_CORNERS_L)] = (470, 300), (530, 300)
+    for k, i in enumerate(face_landmarks.OUTLINE):     # clockwise from the top
+        t = 2 * np.pi * k / len(face_landmarks.OUTLINE)
+        pts[i] = 400 + 250 * np.sin(t), 380 - 330 * np.cos(t)
+    return pts
+
+
+def turned_points() -> np.ndarray:
+    """outline_points() turned to the person's right: their left side of the outline,
+    on the right of the photo, runs over the cheek, short of the cheek's edge at x 646."""
+    pts = outline_points()
+    left = list(face_landmarks.OUTLINE_L)
+    pts[left, 0] = 400 + 0.6 * (pts[left, 0] - 400)
     return pts
 
 
@@ -689,6 +852,84 @@ def test_the_mask_uses_outlines_and_only_falls_back_without_them():
         assert len(calls) == 1
     finally:
         face_landmarks.landmarks, smoother.lip_mask, face_landmarks.get_model_path = saved
+
+
+def test_ear_zones_lie_beside_the_outline_from_ear_top_to_lobe():
+    zones, inside = face_landmarks.ear_zones(outline_points(), 800, 800)
+    ears = painted(zones, 800, 800)
+    assert len(zones) == 2
+    assert ears[322, 80] == 255 and ears[322, 720] == 255, "beside the outline, level with the eyes"
+    assert ears[150, 200] == 255 and ears[455, 140] == 255, "up to the ear's top, down to its lobe"
+    assert ears[322, 152] == 0 and ears[322, 170] == 0, "a gap, then the cheek"
+    assert ears[100, 160] == 0 and ears[520, 100] == 0, "nothing above the ear or below the lobe"
+    assert ears[322, 5] == 0, "nothing past the farthest an ear reaches"
+    own = painted([inside], 800, 800)
+    assert own[322, 170] == 255 and own[322, 140] == 0, "the inside is the outline"
+
+
+def test_a_side_turned_away_gets_no_ear_zone():
+    zones, inside = face_landmarks.ear_zones(turned_points(), 800, 800)
+    ears = painted(zones, 800, 800)
+    assert ears[322, 80] == 255, "the near side's ear"
+    assert ears[:, 400:].max() == 0, "the far side: its outline is on the cheek and its ear is hidden"
+    assert painted([inside], 800, 800)[322, 600] == 255, "the far cheek past its outline counts as inside"
+
+
+def test_ear_zones_off_the_photo():
+    assert face_landmarks.ear_zones(outline_points() - (0, 2000), 800, 800) == ([], None)
+    zones, _ = face_landmarks.ear_zones(outline_points() - (100, 0), 800, 800)
+    assert len(zones) == 2, "the right ear's zone partly off the photo"
+    assert face_landmarks.ear_zones(np.zeros((face_landmarks.POINTS, 2)), 800, 800) == ([], None)
+
+
+def all_skin(bgr, faces):
+    """Segments saying the whole photo is face skin, for every face."""
+    h, w = bgr.shape[:2]
+    ones = np.ones((h, w), np.float32)
+    return skin_segment.Segments(0, 0, w, h, bgr, ones, np.zeros((h, w), np.float32), ones, tuple(range(len(faces))))
+
+
+def mask_with(img, faces, points) -> np.ndarray:
+    """build_skin_mask (Face only) with every pixel skin and these landmarks per face."""
+    saved = skin_segment.segment, face_landmarks.landmarks
+    try:
+        skin_segment.segment, face_landmarks.landmarks = all_skin, lambda _b, _f: points
+        return smoother.build_skin_mask(img, faces=faces, face_only=True)
+    finally:
+        skin_segment.segment, face_landmarks.landmarks = saved
+
+
+def test_ears_are_cut_from_the_mask_and_the_cheeks_are_not():
+    mask = mask_with(skin_photo(800, 800), rows(face_row(150, 50, 500, 660)), [outline_points()])
+    assert mask[322, 80] < 0.05 and mask[322, 720] < 0.05, "ears"
+    assert mask[400, 200] > 0.95 and mask[400, 600] > 0.95, "cheeks"
+    assert mask[560, 100] > 0.95 and mask[60, 100] > 0.95, "below the lobe and above the ear"
+
+
+def test_an_ear_zone_never_cuts_another_face():
+    img = skin_photo(800, 1300)
+    faces = rows(face_row(150, 50, 500, 660), face_row(650, 50, 500, 660))
+    mask = mask_with(img, faces, [outline_points(), outline_points() + (500, 0)])
+    assert mask[322, 700] > 0.95, "the right face's cheek, in the left face's ear zone"
+    assert mask[322, 600] > 0.95, "and the other way round"
+    assert mask[322, 80] < 0.05 and mask[322, 1220] < 0.05, "the outer ears are still cut"
+
+    # The far side of a turned face: its cheek reaches past its outline.
+    turned = turned_points() + (500, 0)
+    turned[:, 0] = 1800 - turned[:, 0]                  # mirrored, so its far side faces the left face
+    mask = mask_with(img, faces, [outline_points(), turned])
+    assert mask[322, 690] > 0.95, "its far cheek, past its outline, in the left face's ear zone"
+
+
+def test_a_face_without_landmarks_keeps_its_ears_and_its_cheek():
+    img = skin_photo(800, 1400)
+    alone = mask_with(img[:, :800], rows(face_row(150, 50, 500, 660)), [None])
+    assert alone[322, 80] > 0.95 and alone[322, 720] > 0.95, "nothing marks where its ears are"
+    # Its box starts at x 800; a turned face's near cheek can reach well past it.
+    faces = rows(face_row(150, 50, 500, 660), face_row(800, 50, 500, 660))
+    mask = mask_with(img, faces, [outline_points(), None])
+    assert mask[322, 700] > 0.95, "its cheek could reach into the left face's ear zone"
+    assert mask[322, 80] < 0.05, "the left face's other ear is still cut"
 
 
 def test_landmark_model_gives_one_answer_per_face():

@@ -3,9 +3,14 @@
 //
 // 1 where skin should be smoothed: the face ovals, minus non-skin colours,
 // minus the eyes, brows and lips themselves (found from how they differ from
-// the surrounding skin). Computed only around the faces; zero elsewhere.
+// the surrounding skin), minus the ears. Computed only around the faces; zero
+// elsewhere.
 
 import { copyMat } from './cv.js';
+
+// A turned face's near cheek reaches this many box widths from the box's centre
+// (smoother.CHEEK_REACH).
+const CHEEK_REACH = 0.9;
 
 // Python's round(): halves go to the even neighbour.
 export function pyRound(v) {
@@ -316,8 +321,10 @@ export function browMask(cv, bgr, ex, ey, eyeD, angle) {
 // null. covered: the faces it can speak for. The other faces use their face geometry.
 // outlines: per face, its eyes, brows and lips from zones() in face_landmarks.js, which
 // this deletes, or null where they should be found from how they differ from skin.
+// ears: per face with outlines, its ear zones and inside from earZones() in
+// face_landmarks.js, which this deletes. A face without outlines keeps its ears.
 // Returns { x0, y0, w, h, data: Float32Array } (values 0..1; zero outside).
-export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = [], outlines = []) {
+export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = [], outlines = [], ears = []) {
   const H = bgr.rows, W = bgr.cols;
   const diag = Math.hypot(H, W);
   const k = Math.max(3, Math.trunc(diag * 0.01 * Math.max(feather, 0.01))) | 1;
@@ -344,8 +351,10 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
   const RW = X1 - X0, RH = Y1 - Y0;
   let area = cv.Mat.zeros(RH, RW, cv.CV_8U);
   const protect = cv.Mat.zeros(RH, RW, cv.CV_8U);
-  const paint = ({ mask, x0, y0 }) => {
-    const from = mask.data, to = protect.data, cols = mask.cols;
+  const earArea = cv.Mat.zeros(RH, RW, cv.CV_8U);   // where each face's ears can be
+  const inside = cv.Mat.zeros(RH, RW, cv.CV_8U);    // the faces themselves, which no ear zone may cut
+  const paintInto = (target) => ({ mask, x0, y0 }) => {
+    const from = mask.data, to = target.data, cols = mask.cols;
     for (let y = 0; y < mask.rows; y++) {
       const ry = y + y0 - Y0;
       if (ry < 0 || ry >= RH) continue;
@@ -356,6 +365,7 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
     }
     mask.delete();
   };
+  const paint = paintInto(protect);
 
   faces.forEach((f, i) => {
     const eyeD = Math.hypot(f[6] - f[4], f[7] - f[5]) || f[2] * 0.4;
@@ -365,8 +375,17 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
     }
     if (outlines[i]) {
       outlines[i].forEach(paint);
+      if (ears[i]) {
+        ears[i].zones.forEach(paintInto(earArea));
+        if (ears[i].inside) paintInto(inside)(ears[i].inside);
+      }
       return;
     }
+    // Without the outline nothing shows where the cheek ends and the ear begins (the
+    // detector's box stops well short of a turned face's near cheek), so this face keeps
+    // its ears. Its cheek can still reach this far, so other faces' ear zones stay off it.
+    cv.ellipse(inside, new cv.Point(Math.trunc(f[0] + f[2] / 2) - X0, Math.trunc(f[1] + f[3] * 0.55) - Y0),
+      new cv.Size(Math.trunc(f[2] * CHEEK_REACH), Math.trunc(f[3] * 0.72)), 0, 0, 360, new cv.Scalar(255), -1);
     const angle = Math.atan2(f[7] - f[5], f[6] - f[4]) * 180 / Math.PI;
     for (const [ex, ey] of [[f[4], f[5]], [f[6], f[7]]]) {
       paint(eyeMask(cv, bgr, ex, ey, eyeD, angle));
@@ -374,6 +393,11 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
     }
     paint(lipMask(cv, bgr, f));
   });
+  {
+    const e = earArea.data, s = inside.data, p = protect.data;
+    for (let k = 0; k < p.length; k++) if (e[k] && !s[k]) p[k] = 255;
+  }
+  earArea.delete(); inside.delete();
 
   const soft = new cv.Mat();
   if (!found || ovals.length) {
