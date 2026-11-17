@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 
 import smoother
 import blemish
+import look
 import photo_io
 
 PREVIEW_MAX = 640  # longest edge of each preview pane
@@ -27,6 +28,9 @@ PREVIEW_MAX = 640  # longest edge of each preview pane
 PRINT_SIZES = {"Large print or screen": "large", "Small print (1-inch ID)": "small"}
 # Lighting choices -> smoother.LIGHTING keys. Hard light evens out mottled light and shadow more.
 LIGHTINGS = {"Soft (studio)": "soft", "Hard or patchy (flash)": "hard"}
+# Look choices -> look.LOOKS keys: settings chosen together. Custom is whatever the controls say.
+LOOK_NAMES = {"Natural": "natural", "Studio ID photo": "studio"}
+CUSTOM_LOOK = "Custom"
 
 
 def to_photo(bgr) -> ImageTk.PhotoImage:
@@ -45,6 +49,7 @@ class App(tk.Tk):
         self.photo_info = photo_io.PhotoInfo()  # its colour profile, EXIF, JPEG settings
         self.preview_bgr = None    # scaled original for display
         self.preview_mask = None   # cached mask for the preview
+        self.preview_look = None   # cached (skin area, landmarks, faces' brightness) for the preview
         self.preview_corr = None   # cached blemish correction for the preview
         self.src_path = None
         self._after_id = None
@@ -113,7 +118,27 @@ class App(tk.Tk):
         ttk.Checkbutton(bar, text="Face only", variable=self.face_only,
                         command=self._on_face_only).pack(side=tk.LEFT, padx=(0, 16))
 
-        self.status = ttk.Label(bar, text="Open an image to begin.")
+        # A second row: the look, and the two finishing steps it also sets.
+        more = ttk.Frame(self, padding=(8, 0, 8, 8))
+        more.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(more, text="Look").pack(side=tk.LEFT)
+        self.look_name = tk.StringVar(value=next(iter(LOOK_NAMES)))
+        looks = ttk.Combobox(more, textvariable=self.look_name, values=list(LOOK_NAMES) + [CUSTOM_LOOK],
+                             state="readonly", width=18)
+        looks.bind("<<ComboboxSelected>>", self._on_look)
+        looks.pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(more, text="Under-eyes").pack(side=tk.LEFT)
+        self.eyes = tk.DoubleVar(value=0)
+        ttk.Scale(more, from_=0, to=100, variable=self.eyes, command=self._on_slider,
+                  length=160).pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(more, text="Balance skin tone").pack(side=tk.LEFT)
+        self.tone = tk.DoubleVar(value=0)
+        ttk.Scale(more, from_=0, to=100, variable=self.tone, command=self._on_slider,
+                  length=160).pack(side=tk.LEFT, padx=(4, 16))
+
+        self.status = ttk.Label(more, text="Open an image to begin.")
         self.status.pack(side=tk.RIGHT)
 
         body = ttk.Frame(self, padding=8)
@@ -172,8 +197,9 @@ class App(tk.Tk):
         self._render_preview()
 
     def _analyse_preview(self):
-        self.preview_mask = smoother.build_skin_mask(self.preview_bgr, faces=self.preview_faces,
-                                                     face_only=self.face_only.get())
+        self.preview_mask, area, points = smoother.skin_layers(self.preview_bgr, faces=self.preview_faces,
+                                                               face_only=self.face_only.get())
+        self.preview_look = area, points, look.skin_luma(self.preview_bgr, self.preview_mask, self.preview_faces)
         self.preview_corr, _ = blemish.correction(self.preview_bgr, self.preview_faces, self.preview_mask)
 
     def _on_face_only(self):
@@ -188,7 +214,30 @@ class App(tk.Tk):
     def _light(self) -> float:
         return smoother.LIGHTING[LIGHTINGS[self.lighting.get()]]
 
+    def _settings(self) -> dict:
+        """The settings a look sets, as they now are."""
+        return {"strength": self.strength.get() / 100.0, "texture": self.texture.get() / 100.0,
+                "lighting": LIGHTINGS[self.lighting.get()], "print": PRINT_SIZES[self.print_size.get()],
+                "eyes": self.eyes.get() / 100.0, "tone": self.tone.get() / 100.0}
+
+    def _on_look(self, _evt=None):
+        values = look.LOOKS.get(LOOK_NAMES.get(self.look_name.get()))
+        if values is not None:
+            self.strength.set(values["strength"] * 100)
+            self.texture.set(values["texture"] * 100)
+            self.eyes.set(values["eyes"] * 100)
+            self.tone.set(values["tone"] * 100)
+            self.lighting.set(next(k for k, v in LIGHTINGS.items() if v == values["lighting"]))
+            self.print_size.set(next(k for k, v in PRINT_SIZES.items() if v == values["print"]))
+        self._on_slider()
+
     def _on_slider(self, _evt=None):
+        # The look shown is the one the settings match, if any.
+        now = self._settings()
+        match = next((name for name, key in LOOK_NAMES.items()
+                      if all(abs(now[k] - v) < 0.005 if isinstance(v, float) else now[k] == v
+                             for k, v in look.LOOKS[key].items())), CUSTOM_LOOK)
+        self.look_name.set(match)
         if self.preview_bgr is None:
             return
         if self._after_id is not None:
@@ -207,6 +256,9 @@ class App(tk.Tk):
                                    mask=self.preview_mask, faces=self.preview_faces,
                                    pores=self.pores.get() / 100.0, grain=self._grain(),
                                    shine=self.shine.get() / 100.0, light=self._light())
+        area, points, luma = self.preview_look
+        out = look.finish(out, self.preview_mask, area, points, luma,
+                          self.eyes.get() / 100.0, self.tone.get() / 100.0)
         self._smooth_photo = to_photo(out)
         self.smooth_label.config(image=self._smooth_photo)
 
@@ -233,6 +285,7 @@ class App(tk.Tk):
         g = self._grain()
         sh = self.shine.get() / 100.0
         li = self._light()
+        eyes, tone = self.eyes.get() / 100.0, self.tone.get() / 100.0
 
         b = self.blemish.get() / 100.0
         face_only = self.face_only.get()
@@ -240,11 +293,12 @@ class App(tk.Tk):
 
         def work():
             faces = smoother._detect_faces(self.full_bgr)
-            mask = smoother.build_skin_mask(self.full_bgr, faces=faces, face_only=face_only)
+            mask, area, points = smoother.skin_layers(self.full_bgr, faces=faces, face_only=face_only)
             corr, _ = blemish.correction(self.full_bgr, faces, mask)
             base = blemish.apply(self.full_bgr, corr, b)
             out = smoother.smooth_face(base, strength=s, texture=t, mask=mask, faces=faces, pores=p, grain=g,
                                        shine=sh, light=li)
+            out = look.finish(out, mask, area, points, look.skin_luma(self.full_bgr, mask, faces), eyes, tone)
             ok = photo_io.write(path, out, info)
             self.after(0, lambda: self._save_done(ok, path))
 

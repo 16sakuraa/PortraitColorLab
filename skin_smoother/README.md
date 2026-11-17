@@ -19,6 +19,11 @@ no external service, nothing taken from the original program.
    on top. **Print size** set to a small print keeps
    coarser grain, the kind that still shows in a 1-inch ID photo.
 5. Blends the result back through the soft mask.
+6. Optionally (`look.py`) evens the skin **under the eyes**, and **balances skin
+   tone** with one brightness curve on all the skin when a face is much darker or
+   brighter than most. Both are off unless asked for. The **Studio ID photo** look
+   turns the skin tone step on, together with settings fitted to a portrait studio's
+   hand retouching of ID photos.
 
 Everything runs on your computer's CPU, with no GPU or service. What AI does here (it
 only finds faces and skin) and what it doesn't is in the main README, "AI in this app".
@@ -40,8 +45,13 @@ use Back and Next at the bottom of the panel:
 
 1. **Skin:** Lighting, Print size and Face only, and the brush for the skin area
    (**Add skin**, **Remove skin**).
-2. **Smooth:** Remove blemishes, Strength, Keep texture, Reduce shine, Add pores, and
-   the **light brush**, **Nose line** and **Smooth again**.
+2. **Smooth:** Remove blemishes, Strength, Keep texture, Reduce shine, Under-eyes,
+   Balance skin tone, Add pores, and the **light brush**, **Nose line** and
+   **Smooth again**.
+
+**Look**, above the steps, sets several of these at once: Natural (how the app opens)
+or Studio ID photo. Moving a setting afterwards shows the look as Custom.
+
 3. **Finish:** **Undo smoothing**, **Restore**, **Heal** and **Remove spot**.
 
 Everything is redone from the original photo each time, so you can go back to an
@@ -155,10 +165,16 @@ python app.py
   (0 = off).
 - **Add pores** adds fine synthetic pore texture (0 = none).
 - **Lighting** "Hard or patchy (flash)" evens out mottled light and shadow more;
-  keep "Soft (studio)" for softbox photos.
+  keep "Soft (studio)" for softbox photos, unless you want blotches and folds evened
+  more, as the Studio ID photo look does.
 - **Print size** "Small print (1-inch ID)" keeps coarser grain for small prints; it
   looks coarser on screen and right in the print.
 - **Face only** leaves out the neck and other body skin.
+- **Look** sets Strength, Keep texture, Lighting, Print size, Under-eyes and Balance
+  skin tone together: Natural, or Studio ID photo.
+- **Under-eyes** evens bags and dark circles under the eyes (0 = off).
+- **Balance skin tone** brings a face much darker or brighter than most part of the
+  way back to the middle of the range (0 = off).
 - Compare the Original (left) and Smoothed (right) panes live.
 - **Save…** writes the full-resolution result.
 
@@ -222,7 +238,10 @@ python smoother.py input.jpg output.jpg --blemish 1 --strength 0.6 --texture 0.6
 
 `--blemish`, `--strength`, `--texture`, `--shine` and `--pores` are 0..1. `--print-size small`
 keeps coarser grain for small prints such as ID photos. `--lighting hard` evens out
-the mottled light and shadow of flash photos. `--face-only` leaves
+the mottled light and shadow of flash photos. `--under-eyes` and `--skin-tone` (0..1,
+off by default) even the skin under the eyes and balance skin brightness; the Studio
+ID photo look is `--strength 0.8 --texture 0.75 --lighting hard --print-size small
+--skin-tone 1`. `--face-only` leaves
 out the neck and other body skin. If no output path is given, it writes
 `input_smooth.jpg` next to the source.
 

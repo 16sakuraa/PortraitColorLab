@@ -27,6 +27,7 @@ import numpy as np
 import smoother
 import blemish
 import heal
+import look
 import mask_edit
 import photo_io
 import updater
@@ -44,10 +45,12 @@ _analysis_lock = threading.Lock()
 
 
 def _analysed(image_url: str, face_only: bool, preview: bool = False):
-    """(img, info, faces, mask, corr, spot count) for an uploaded photo. With preview,
-    the photo scaled down to PREVIEW_MAX with its analysis to match (scaled_analysis):
-    the faces, skin and spots are still found on the full-size photo, as the web app
-    does, so the preview shows what the download will."""
+    """(img, info, faces, mask, corr, spot count, extra) for an uploaded photo; extra is
+    what look.py's steps go by: {"area": all the skin, "points": each face's landmarks,
+    "luma": the faces' brightness}. With preview, the photo scaled down to PREVIEW_MAX
+    with its analysis to match (scaled_analysis): the faces, skin and spots are still
+    found on the full-size photo, as the web app does, so the preview shows what the
+    download will."""
     key = (hash(image_url), face_only)
     with _analysis_lock:
         if key not in _analysis_cache:
@@ -56,9 +59,10 @@ def _analysed(image_url: str, face_only: bool, preview: bool = False):
             if img is None:
                 raise ValueError("could not decode image")
             faces = smoother._detect_faces(img)
-            mask = smoother.build_skin_mask(img, faces=faces, face_only=face_only)
+            mask, area, points = smoother.skin_layers(img, faces=faces, face_only=face_only)
             corr, count = blemish.correction(img, faces, mask) if blemish.have_model() else (None, 0)
-            _analysis_cache[key] = (img, info, faces, mask, corr, count)
+            extra = {"area": area, "points": points, "luma": look.skin_luma(img, mask, faces)}
+            _analysis_cache[key] = (img, info, faces, mask, corr, count, extra)
         if not preview:
             return _analysis_cache[key]
         if (key, "preview") not in _analysis_cache:
@@ -67,12 +71,13 @@ def _analysed(image_url: str, face_only: bool, preview: bool = False):
 
 
 def scaled_analysis(analysed, longest: int):
-    """_analysed's (img, info, faces, mask, corr, spot count) for the photo scaled down to
-    at most `longest` pixels on its long side, without finding anything again: the
-    photo, mask and spot fills shrunk (INTER_AREA), the face rows' positions scaled and
-    their scores kept. The fills are cut to the smaller photo. Like scaleAnalysis in the
-    web app's pipeline.js. The same tuple when the photo is already that small."""
-    img, info, faces, mask, corr, count = analysed
+    """_analysed's (img, info, faces, mask, corr, spot count, extra) for the photo scaled
+    down to at most `longest` pixels on its long side, without finding anything again:
+    the photo, mask, skin area and spot fills shrunk (INTER_AREA), the face rows' and
+    landmarks' positions scaled, the scores and the faces' brightness kept. The fills are
+    cut to the smaller photo. Like scaleAnalysis in the web app's pipeline.js. The same
+    tuple when the photo is already that small."""
+    img, info, faces, mask, corr, count, extra = analysed
     h, w = img.shape[:2]
     s = min(1.0, longest / max(h, w))
     if s >= 1.0:
@@ -89,7 +94,9 @@ def scaled_analysis(analysed, longest: int):
                            interpolation=cv2.INTER_AREA)
         x0, y0 = min(pw - 1, round(x0 * s)), min(ph - 1, round(y0 * s))
         corr = x0, y0, fills[:ph - y0, :pw - x0]
-    return small, info, faces, mask, corr, count
+    extra = {"area": cv2.resize(extra["area"], (pw, ph), interpolation=cv2.INTER_AREA),
+             "points": [None if p is None else p * s for p in extra["points"]], "luma": extra["luma"]}
+    return small, info, faces, mask, corr, count, extra
 
 
 def _picture(data: bytes, mime: str) -> str:
@@ -106,7 +113,7 @@ def _mask_image(mask: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
 
 
-WEB_SCRIPTS = ("mask_brush.js", "i18n.js", "compare_zoom.js", "history.js")   # the web app's scripts this page uses
+WEB_SCRIPTS = ("mask_brush.js", "i18n.js", "compare_zoom.js", "history.js", "looks.js")   # the web app's scripts this page uses
 
 
 def _web_script(name: str) -> bytes:
@@ -230,11 +237,21 @@ PAGE ="""<!doctype html>
 </main>
 
 <aside class="tools" aria-label="Retouch settings" data-i18n-aria="page.settingsAria">
+  <section id="lookbox">
+    <h2 data-i18n="panel.look">Look</h2>
+    <div class="ctl">
+      <select id="look" aria-label="Look" data-i18n-aria="ctl.look" data-i18n-title="ctl.lookTitle" title="A look sets several settings at once. Studio ID photo follows how a portrait studio retouches ID photos: blotches and folds evened more, the grain of a small print, and skin tone balanced. Every setting can still be changed afterwards.">
+        <option value="natural" selected data-i18n="ctl.lookNatural">Natural</option>
+        <option value="studio" data-i18n="ctl.lookStudio">Studio ID photo</option>
+        <option value="custom" data-i18n="ctl.lookCustom">Custom</option>
+      </select>
+    </div>
+  </section>
   <section data-step="1">
     <h2 data-i18n="panel.skinPhoto">Skin and photo</h2>
     <div class="ctl">
       <label for="lighting" data-i18n="ctl.lighting">Lighting</label>
-      <select id="lighting" data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
+      <select id="lighting" data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
         <option value="soft" selected data-i18n="ctl.lightingSoft">Soft (studio)</option>
         <option value="hard" data-i18n="ctl.lightingHard">Hard or patchy (flash)</option>
       </select>
@@ -268,6 +285,14 @@ PAGE ="""<!doctype html>
       <input id="shine" type="range" min="0" max="100" value="0">
     </div>
     <div class="ctl">
+      <label data-i18n-title="ctl.eyesTitle" title="Evens bags, creases and dark circles under the eyes and lifts them a little towards the cheek's tone. The skin's grain stays. Raise it for heavy bags."><span data-i18n="ctl.eyes">Under-eyes</span> <span id="yval">0</span></label>
+      <input id="eyes" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="ctl">
+      <label data-i18n-title="ctl.toneTitle" title="Brightens skin that is much darker than most faces and tones down skin that is much brighter; a face in between is left as it is. This changes how light or dark the skin looks, so use it only when that is wanted."><span data-i18n="ctl.tone">Balance skin tone</span> <span id="nval">0</span></label>
+      <input id="tone" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="ctl">
       <label><span data-i18n="ctl.pores">Add pores</span> <span id="pval">0</span></label>
       <input id="pores" type="range" min="0" max="100" value="0">
     </div>
@@ -292,6 +317,7 @@ import { attachMaskBrush, attachSteps } from '/mask_brush.js';
 import { t, translatePage, attachLangSwitch, onLangChange } from '/i18n.js';
 import { attachCompareZoom } from '/compare_zoom.js';
 import { attachHistory } from '/history.js';
+import { attachLook } from '/looks.js';
 
 const $ = id => document.getElementById(id);
 // The page in the language last chosen (or the browser's), with a TH | EN switch.
@@ -311,6 +337,8 @@ const brush = attachMaskBrush({
 });
 // The settings and brush tools in three steps, like DM Portrait's: Skin, Smooth, Finish.
 const steps = attachSteps({ panel: document.querySelector('.tools'), brush, navBefore: $('historybox') });
+// A look puts its settings in the controls (before History, so its entry holds them).
+attachLook({ select: $('look'), onApply: () => process() });
 // Every change listed, to go back to any of them, with Undo and Redo.
 const history = attachHistory({ host: $('historybox'), brush, render: () => runProcess() });
 // Scroll on either photo to zoom both into the same spot.
@@ -411,8 +439,8 @@ $('reset').addEventListener('click', () => {
   $('file').value = '';
 });
 
-const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', pores: 'pval', blemish: 'bval'};
-['strength','texture','shine','pores','blemish'].forEach(id => {
+const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', eyes: 'yval', tone: 'nval', pores: 'pval', blemish: 'bval'};
+['strength','texture','shine','eyes','tone','pores','blemish'].forEach(id => {
   $(id).addEventListener('input', () => {
     $(valueLabel[id]).textContent = $(id).value;
     process();
@@ -469,6 +497,8 @@ async function runProcess(full = false){
         strength: +$('strength').value / 100,
         texture: +$('texture').value / 100,
         shine: +$('shine').value / 100,
+        eyes: +$('eyes').value / 100,
+        tone: +$('tone').value / 100,
         pores: +$('pores').value / 100,
         print: $('print').value,
         lighting: $('lighting').value,
@@ -570,11 +600,14 @@ class Handler(BaseHTTPRequestHandler):
             light = smoother.LIGHTING.get(payload.get("lighting"), 1.0)
             face_only = bool(payload.get("face_only", False))
             blemish_amt = float(payload.get("blemish", 0.0))
+            eyes = float(payload.get("eyes", 0.0))
+            tone = float(payload.get("tone", 0.0))
             # The page asks for a preview while editing and the full size to download.
             preview = bool(payload.get("preview", False))
 
             full_h, full_w = _analysed(payload["image"], face_only)[0].shape[:2]
-            img, info, faces, mask, corr, spots = _analysed(payload["image"], face_only, preview)
+            img, info, faces, mask, corr, spots, extra = _analysed(payload["image"], face_only, preview)
+            area = extra["area"]
             n_faces = 0 if faces is None else len(faces)
 
             # The brush's strokes change the mask, and take restored areas out of the fills.
@@ -584,6 +617,7 @@ class Handler(BaseHTTPRequestHandler):
                 region, fills, again = mask_edit.edits(strokes, img.shape[1], img.shape[0])
                 mask = mask_edit.apply_to_mask(mask, region)
                 corr = mask_edit.apply_to_correction(corr, fills)
+                area = mask_edit.apply_to_mask(area, fills)     # like the fixes: Undo smoothing keeps it
 
             # Heal blemishes first, then the healing brush's strokes, then smooth (the
             # usual retouching order).
@@ -598,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
             # Smooth again: once more, with finer grain, where it was painted.
             if again is not None:
                 out = smoother.smooth_again(healed, out, again, mask, faces, texture, pores, grain, shine, light)
+            # Under-eyes and skin tone (off unless asked for), on the smoothed result.
+            out = look.finish(out, mask, area, extra["points"], extra["luma"], eyes, tone)
             # The light brush paints tone on the smoothed result, keeping the grain it kept.
             out = heal.apply_light(out, strokes, smoother.detail_sigma(img.shape, faces, grain))
 

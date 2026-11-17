@@ -35,6 +35,10 @@ const OUTLINE_L = OUTLINE.slice(1, 18), OUTLINE_R = OUTLINE.slice(19);
 const EAR_R = [54, 21, 162, 127, 234, 93, 132, 58];
 const EAR_L = [284, 251, 389, 356, 454, 323, 361, 288];
 const SIDE_R = 234, SIDE_L = 454;
+// Each lower eyelid, from the outer corner to the inner one, and the chin.
+const LOWER_LID_R = [33, 7, 163, 144, 145, 153, 154, 155, 133];
+const LOWER_LID_L = [263, 249, 390, 373, 374, 380, 381, 382, 362];
+const CHIN = 152;
 
 // Same settings as face_landmarks.TUNE; see the notes there.
 export const TUNE = {
@@ -47,6 +51,10 @@ export const TUNE = {
   ear_ends: 0.5,
   ear_turn: 0.75,
   far_cheek: 0.35,
+  under_eye_gap: 0.02,
+  under_eye_reach: 0.3,
+  under_eye_in: 0.06,
+  under_eye_out: 0.04,
 };
 
 // Runs the model on a square around (cx, cy), turned by angle (radians). Returns
@@ -179,6 +187,33 @@ function fillPolygon(cv, poly, w, h) {
   cv.fillPoly(mask, polys, new cv.Scalar(255));
   m.delete(); polys.delete();
   return { mask, x0, y0 };
+}
+
+// The skin under each of one face's eyes, in a w x h photo: from just below the lower
+// lid, down about as far as dark circles and bags reach, a little wider than the eye and
+// more so towards the nose. For look.js's under-eye step. Returns { zones: [{ mask, x0,
+// y0 }], dx, dy, eyeD }: dx, dy is one eye distance down the face, towards the chin, in
+// photo pixels. The caller deletes the masks.
+export function underEyeZones(cv, pts, w, h) {
+  const t = TUNE, [rx, ry, lx, ly] = eyeCentres(pts);
+  const eyeD = Math.hypot(lx - rx, ly - ry);
+  if (!(eyeD > 0)) return { zones: [], dx: 0, dy: 0, eyeD: 0 };
+  const ax = (lx - rx) / eyeD, ay = (ly - ry) / eyeD;
+  let dx = -ay * eyeD, dy = ax * eyeD;               // square to the eyes ...
+  const mx = (rx + lx) / 2, my = (ry + ly) / 2;
+  if ((pts[2 * CHIN] - mx) * dx + (pts[2 * CHIN + 1] - my) * dy < 0) { dx = -dx; dy = -dy; }   // ... on the chin's side
+  const zones = [];
+  for (const [lid, toNose] of [[LOWER_LID_R, 1], [LOWER_LID_L, -1]]) {
+    const line = lid.map((i) => [pts[2 * i] + t.under_eye_gap * dx, pts[2 * i + 1] + t.under_eye_gap * dy]);
+    const nx = toNose * ax * eyeD, ny = toNose * ay * eyeD, n = line.length;
+    const top = [[line[0][0] - t.under_eye_out * nx, line[0][1] - t.under_eye_out * ny], ...line,
+      [line[n - 1][0] + t.under_eye_in * nx, line[n - 1][1] + t.under_eye_in * ny]];
+    const poly = top.flat();
+    for (let k = top.length - 1; k >= 0; k--) poly.push(top[k][0] + t.under_eye_reach * dx, top[k][1] + t.under_eye_reach * dy);
+    const zone = fillPolygon(cv, poly, w, h);
+    if (zone) zones.push(zone);
+  }
+  return { zones, dx, dy, eyeD };
 }
 
 // One face's ear zones and its inside, in a w x h photo: { zones: [{ mask, x0, y0 }],

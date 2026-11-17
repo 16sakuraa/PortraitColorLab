@@ -39,7 +39,8 @@ skin is usually the most they allow.
   segmentation tells skin from hair, clothes and background, and Google's Face Mesh V2
   outlines the eyes, brows and lips so smoothing leaves them alone.
 - **The retouch itself is ordinary image processing.** Blemish removal, smoothing,
-  Reduce shine, Lighting and every brush only blend and move pixels of the same photo;
+  Reduce shine, Lighting, Under-eyes, Balance skin tone and every brush only blend and
+  move pixels of the same photo;
   Add pores adds a fixed, computed grain pattern. There is no generative AI: nothing is
   made up, the shape of the face and its features stay as they are, and the same photo
   with the same settings gives the same result each time. The app can't remove a beard,
@@ -84,6 +85,20 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   grain, because grain finer than a printed dot disappears at that size. The
   print then keeps as much texture as Keep texture asks for. It looks coarser on
   screen.
+- **Under-eyes:** evens bags, creases and dark circles under the eyes and lifts them
+  a little towards the cheek's tone, keeping the skin's grain and the eye socket's own
+  shading. Raise it for heavy bags. Off by default.
+- **Balance skin tone:** one brightness curve on all the skin, for a face much darker
+  or much brighter than most. Such a face moves part of the way towards the middle of
+  the range; a face in between is left alone. It changes how light or dark a
+  complexion looks, not just exposure, so whether to use it is a matter of taste: the
+  amounts follow one portrait studio's retouching of ID photos. Off by default.
+- **Look:** sets several settings at once. **Natural** is how the app opens.
+  **Studio ID photo** follows how a portrait studio retouches ID photos by hand: its
+  settings were fitted to before/after pairs of that work (Strength 80, Keep texture
+  75, Lighting hard, Print size small, Balance skin tone 100). The hard-light setting
+  is used here on soft studio light too, because it evens blotches and folds about as
+  much as the hand retouch does. Any setting can still be changed afterwards.
 - **Brush:** paint **Restore** to bring back the original, all of it or part
   (Strength), for example on a mole; **Undo smoothing** to bring back the original's
   sharpness, around the eyes, the nostrils or the jawline, while keeping the removed
@@ -99,9 +114,9 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   smooths a painted area once more, at full strength with half the grain, for coarse
   grain, blotches or stubble shadow that are left. In the web app and the `.exe`.
 
-The settings sit in a panel on the right of the window, in three steps: **1 Skin**
+The settings sit in a panel on the right of the window, under **Look**, in three steps: **1 Skin**
 (Lighting, Print size, Face only, and the brush for the skin area), **2 Smooth** (the
-sliders, the light brush, Nose line and Smooth again) and **3 Finish** (Undo
+sliders, Under-eyes and Balance skin tone among them, the light brush, Nose line and Smooth again) and **3 Finish** (Undo
 smoothing, Restore, Heal, Remove spot). Tabs and Back / Next move between them; everything is redone from the
 original, so going back to change a setting keeps all brush work. On a narrow screen
 the panel moves above the photos. Scroll on either photo of the before / after pair to

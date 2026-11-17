@@ -56,6 +56,7 @@ def main() -> int:
         assert b"attachLangSwitch" in _get(base + "/i18n.js"), "the brush's words, in English and Thai"
         assert b"attachCompareZoom" in _get(base + "/compare_zoom.js"), "the comparison's zoom"
         assert b"attachHistory" in _get(base + "/history.js"), "the History panel"
+        assert b"attachLook" in _get(base + "/looks.js"), "the looks"
         update = json.loads(_get(base + "/update"))
         assert update["state"] == "off", update
         if want:

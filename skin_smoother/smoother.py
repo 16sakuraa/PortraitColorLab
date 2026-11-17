@@ -18,6 +18,9 @@ Pipeline:
      gently, fine lines more, and leave real edges, lashes and stray hairs alone.
      Optionally tame the bright glints of oily skin, and add synthetic pores.
   5. Composite through the soft mask.
+  6. Optionally (look.py, off unless asked for): even the skin under the eyes, and
+     balance the skin's brightness with one curve when a face is much darker or
+     brighter than most.
 
 Each model file is looked for next to this script (models/). Without the
 segmentation model, the mask falls back to a face oval from OpenCV's YuNet face
@@ -413,9 +416,23 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
     Eyes, brows and lips stay out, outlined by face_landmarks.py where it can.
     Ears stay out where it can outline the face; other faces keep their ears.
     """
+    return skin_layers(bgr, feather, faces, face_only)[0]
+
+
+def skin_layers(bgr: np.ndarray, feather: float = 1.0, faces=None,
+                face_only: bool = False) -> tuple[np.ndarray, np.ndarray, list]:
+    """build_skin_mask's mask, with what else was found on the way: (mask, area, points).
+
+    area is all the skin, float32 in [0,1]: the mask before the eyes, brows, lips and
+    ears are cut from it, and with the body's skin whatever face_only says, for changes
+    that should carry across all of it (look.py: a face lifted without its neck would
+    show at the jaw). points holds each face's landmarks (face_landmarks.landmarks),
+    None where it has none.
+    """
     h, w = bgr.shape[:2]
     if faces is None:
         faces = _detect_faces(bgr)
+    points: list = [None] * (0 if faces is None else len(faces))
     face_area = np.zeros((h, w), dtype=np.uint8)
     protect = np.zeros((h, w), dtype=np.uint8)   # eyes, brows, lips, ears: never smoothed
     ears = np.zeros((h, w), dtype=np.uint8)      # where each face's ears can be
@@ -423,12 +440,14 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
     found = False
 
     model_area, covered = None, ()
+    whole_area = None          # the model's skin with the body in: model_area unless face_only
     if faces is not None and len(faces) > 0:
         import skin_segment
         seg = skin_segment.segment(bgr, faces)
         if seg is not None:
             model_area = skin_segment.skin_area(seg, faces, face_only)
             covered = seg.covered if model_area is not None else ()
+            whole_area = skin_segment.skin_area(seg, faces, False) if face_only and model_area is not None else model_area
         import face_landmarks
         points = face_landmarks.landmarks(bgr, faces)
 
@@ -490,17 +509,23 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
             tone = cv2.dilate(skin_tone_mask(bgr), np.ones((9, 9), np.uint8))
             face_area = cv2.bitwise_and(face_area, tone)
         soft = cv2.GaussianBlur(face_area.astype(np.float32) / 255.0, (k, k), 0)
+    whole = soft if whole_area is model_area else soft.copy()
     if model_area is not None:
         mx, my, area = model_area
         here = soft[my:my + area.shape[0], mx:mx + area.shape[1]]
         np.maximum(here, area, out=here)
+    if whole is not soft and whole_area is not None:
+        mx, my, area = whole_area
+        here = whole[my:my + area.shape[0], mx:mx + area.shape[1]]
+        np.maximum(here, area, out=here)
+    area = np.clip(whole, 0.0, 1.0)
     if found:
         # Eyes, brows and lips get a much narrower soft edge, placed just
         # outside them, so lashes and lip edges stay fully protected.
         ks = max(3, k // 4) | 1
         guard = cv2.dilate(protect, _odd_kernel(ks))
         soft *= 1.0 - cv2.GaussianBlur(guard.astype(np.float32) / 255.0, (ks, ks), 0)
-    return np.clip(soft, 0.0, 1.0)
+    return np.clip(soft, 0.0, 1.0), area, points
 
 
 WORK_PIXELS = 1.5e6   # tone smoothing works on at most this many pixels
@@ -1039,6 +1064,11 @@ def _cli() -> int:
     ap.add_argument("--print-size", choices=tuple(PRINT_GRAIN), default="large",
                     help="what the photo is for: a large print or screen (the default), or a small "
                          "print such as an ID photo, which keeps coarser grain")
+    ap.add_argument("--under-eyes", type=float, default=0.0,
+                    help="even dark circles and bags under the eyes towards the cheek's tone 0..1 (default 0, off)")
+    ap.add_argument("--skin-tone", type=float, default=0.0,
+                    help="balance skin brightness: bring a face well darker or brighter than the middle "
+                         "of the range part of the way back 0..1 (default 0, off)")
     ap.add_argument("--face-only", action="store_true",
                     help="treat the face only, not the neck or other body skin")
     ap.add_argument("-b", "--blemish", type=float, default=0.0,
@@ -1055,7 +1085,7 @@ def _cli() -> int:
         return 1
 
     faces = _detect_faces(img)
-    mask = build_skin_mask(img, faces=faces, face_only=args.face_only)
+    mask, area, points = skin_layers(img, faces=faces, face_only=args.face_only)
     healed = img
     if args.blemish > 0:
         import blemish
@@ -1071,6 +1101,9 @@ def _cli() -> int:
     out = smooth_face(healed, strength=args.strength, texture=args.texture, mask=mask,
                       faces=faces, pores=args.pores, grain=PRINT_GRAIN[args.print_size],
                       shine=args.shine, light=LIGHTING[args.lighting])
+    if args.under_eyes > 0 or args.skin_tone > 0:
+        import look
+        out = look.finish(out, mask, area, points, look.skin_luma(img, mask, faces), args.under_eyes, args.skin_tone)
 
     out_path = args.output
     if not out_path:

@@ -51,6 +51,10 @@ OUTLINE_R = OUTLINE[19:]
 # The part of each side of the outline an ear joins, from about the top of the ear
 # down to its lobe, with the next point on at each end; and the outline's widest
 # point, beside the ear.
+# Each lower eyelid, from the outer corner to the inner one, and the chin.
+LOWER_LID_R = (33, 7, 163, 144, 145, 153, 154, 155, 133)
+LOWER_LID_L = (263, 249, 390, 373, 374, 380, 381, 382, 362)
+CHIN = 152
 EAR_R = (54, 21, 162, 127, 234, 93, 132, 58)
 EAR_L = (284, 251, 389, 356, 454, 323, 361, 288)
 SIDE_R, SIDE_L = 234, 454
@@ -67,6 +71,10 @@ TUNE = {
     "ear_turn": 0.75,     # a side this much narrower than the other is turned away: its outline
                           # runs over the cheek and its ear is hidden, so it gets no ear zone
     "far_cheek": 0.35,    # how far the cheek on such a side can reach past the outline: measured up to 0.35
+    "under_eye_gap": 0.02,    # the under-eye zone starts this far below the lower lid, same units
+    "under_eye_reach": 0.3,   # and reaches this far down: dark circles and bags end by about here
+    "under_eye_in": 0.06,     # it runs this far past the eye's inner corner, along the tear trough,
+    "under_eye_out": 0.04,    # and this far past the outer one
 }
 
 _net = None
@@ -216,6 +224,36 @@ def _filled(points: np.ndarray, w: int, h: int):
     mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
     cv2.fillPoly(mask, [poly - np.array([x0, y0], np.int32)], 255)
     return mask, (x0, y0)
+
+
+def under_eye_zones(pts: np.ndarray, w: int, h: int) -> tuple[list, tuple[float, float], float]:
+    """The skin under each of one face's eyes, in a w x h photo: from just below the
+    lower lid, down about as far as dark circles and bags reach, a little wider than the
+    eye and more so towards the nose. For look.py's under-eye step.
+
+    Returns ([(uint8 mask, (x0, y0))], (dx, dy), eye distance): dx, dy is one eye distance
+    down the face, towards the chin, in photo pixels.
+    """
+    t = TUNE
+    eye_r, eye_l = _eye_centres(pts)
+    eye_d = float(np.hypot(eye_l[0] - eye_r[0], eye_l[1] - eye_r[1]))
+    if not eye_d > 0:
+        return [], (0.0, 0.0), 0.0
+    ax, ay = (eye_l[0] - eye_r[0]) / eye_d, (eye_l[1] - eye_r[1]) / eye_d
+    dx, dy = -ay * eye_d, ax * eye_d                  # square to the eyes ...
+    mx, my = (eye_r[0] + eye_l[0]) / 2, (eye_r[1] + eye_l[1]) / 2
+    if (pts[CHIN, 0] - mx) * dx + (pts[CHIN, 1] - my) * dy < 0:
+        dx, dy = -dx, -dy                             # ... on the chin's side
+    zones = []
+    for lid, to_nose in ((LOWER_LID_R, 1.0), (LOWER_LID_L, -1.0)):
+        line = pts[list(lid)] + np.array([t["under_eye_gap"] * dx, t["under_eye_gap"] * dy])
+        nose = np.array([to_nose * ax * eye_d, to_nose * ay * eye_d])
+        top = np.concatenate([line[:1] - t["under_eye_out"] * nose, line, line[-1:] + t["under_eye_in"] * nose])
+        low = top[::-1] + np.array([t["under_eye_reach"] * dx, t["under_eye_reach"] * dy])
+        zone = _filled(np.concatenate([top, low]), w, h)
+        if zone is not None:
+            zones.append(zone)
+    return zones, (dx, dy), eye_d
 
 
 def ear_zones(pts: np.ndarray, w: int, h: int) -> tuple[list, tuple | None]:

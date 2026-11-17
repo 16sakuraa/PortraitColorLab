@@ -323,8 +323,12 @@ export function browMask(cv, bgr, ex, ey, eyeD, angle) {
 // this deletes, or null where they should be found from how they differ from skin.
 // ears: per face with outlines, its ear zones and inside from earZones() in
 // face_landmarks.js, which this deletes. A face without outlines keeps its ears.
-// Returns { x0, y0, w, h, data: Float32Array } (values 0..1; zero outside).
-export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = [], outlines = [], ears = []) {
+// wholeArea: the model's skin with the body in, when modelArea was made for Face only.
+// Returns { x0, y0, w, h, data: Float32Array, area: Float32Array } (values 0..1; zero
+// outside). area is all the skin: the mask before the eyes, brows, lips and ears are cut
+// from it, and with the body's skin whatever Face only says, for changes that should
+// carry across all of it (look.js: a face lifted without its neck would show at the jaw).
+export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, covered = [], outlines = [], ears = [], wholeArea = modelArea) {
   const H = bgr.rows, W = bgr.cols;
   const diag = Math.hypot(H, W);
   const k = Math.max(3, Math.trunc(diag * 0.01 * Math.max(feather, 0.01))) | 1;
@@ -340,9 +344,10 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
       const cx = f[0] + f[2] / 2, cy = f[1] + f[3] * 0.55, ax = f[2] * 0.52, ay = f[3] * 0.72;
       X0 = Math.min(X0, cx - ax); X1 = Math.max(X1, cx + ax); Y0 = Math.min(Y0, cy - ay); Y1 = Math.max(Y1, cy + ay);
     }
-    if (modelArea) {
-      X0 = Math.min(X0, modelArea.x0); X1 = Math.max(X1, modelArea.x0 + modelArea.w);
-      Y0 = Math.min(Y0, modelArea.y0); Y1 = Math.max(Y1, modelArea.y0 + modelArea.h);
+    for (const a of new Set([modelArea, modelArea && wholeArea])) {
+      if (!a) continue;
+      X0 = Math.min(X0, a.x0); X1 = Math.max(X1, a.x0 + a.w);
+      Y0 = Math.min(Y0, a.y0); Y1 = Math.max(Y1, a.y0 + a.h);
     }
     const m = k + 32;
     X0 = Math.max(0, Math.floor(X0) - m); Y0 = Math.max(0, Math.floor(Y0) - m);
@@ -420,13 +425,18 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
     area.convertTo(soft, cv.CV_32F, 1 / 255);        // all zero: no face uses this method
   }
   area.delete();
-  if (modelArea) {
-    const s = soft.data32F, a = modelArea.data;
-    for (let y = 0; y < modelArea.h; y++) {
-      const to = (y + modelArea.y0 - Y0) * RW + modelArea.x0 - X0, from = y * modelArea.w;
-      for (let x = 0; x < modelArea.w; x++) if (a[from + x] > s[to + x]) s[to + x] = a[from + x];
+  const merge = (s, model) => {
+    const a = model.data;
+    for (let y = 0; y < model.h; y++) {
+      const to = (y + model.y0 - Y0) * RW + model.x0 - X0, from = y * model.w;
+      for (let x = 0; x < model.w; x++) if (a[from + x] > s[to + x]) s[to + x] = a[from + x];
     }
-  }
+  };
+  const whole = modelArea && wholeArea && wholeArea !== modelArea ? new Float32Array(soft.data32F) : null;
+  if (modelArea) merge(soft.data32F, modelArea);
+  if (whole) merge(whole, wholeArea);
+  const area01 = whole || new Float32Array(soft.data32F);
+  for (let i = 0; i < area01.length; i++) area01[i] = area01[i] < 0 ? 0 : area01[i] > 1 ? 1 : area01[i];
   if (found) {
     const ks = Math.max(3, Math.floor(k / 4)) | 1;
     const kg = kernel(cv, ks), guard = new cv.Mat();
@@ -444,5 +454,5 @@ export function buildSkinMask(cv, bgr, faces, feather = 1.0, modelArea = null, c
   const data = new Float32Array(soft.data32F);
   soft.delete();
   for (let i = 0; i < data.length; i++) data[i] = data[i] < 0 ? 0 : data[i] > 1 ? 1 : data[i];
-  return { x0: X0, y0: Y0, w: RW, h: RH, data };
+  return { x0: X0, y0: Y0, w: RW, h: RH, data, area: area01 };
 }

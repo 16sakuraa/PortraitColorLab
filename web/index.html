@@ -117,11 +117,21 @@
 </main>
 
 <aside class="tools" aria-label="Retouch settings" data-i18n-aria="page.settingsAria">
+  <section id="lookbox">
+    <h2 data-i18n="panel.look">Look</h2>
+    <div class="ctl">
+      <select id="look" disabled aria-label="Look" data-i18n-aria="ctl.look" data-i18n-title="ctl.lookTitle" title="A look sets several settings at once. Studio ID photo follows how a portrait studio retouches ID photos: blotches and folds evened more, the grain of a small print, and skin tone balanced. Every setting can still be changed afterwards.">
+        <option value="natural" selected data-i18n="ctl.lookNatural">Natural</option>
+        <option value="studio" data-i18n="ctl.lookStudio">Studio ID photo</option>
+        <option value="custom" data-i18n="ctl.lookCustom">Custom</option>
+      </select>
+    </div>
+  </section>
   <section data-step="1">
     <h2 data-i18n="panel.skinPhoto">Skin and photo</h2>
     <div class="ctl">
       <label for="lighting" data-i18n="ctl.lighting">Lighting</label>
-      <select id="lighting" disabled data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge.">
+      <select id="lighting" disabled data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
         <option value="soft" selected data-i18n="ctl.lightingSoft">Soft (studio)</option>
         <option value="hard" data-i18n="ctl.lightingHard">Hard or patchy (flash)</option>
       </select>
@@ -153,6 +163,14 @@
     <div class="ctl">
       <label for="shine" data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
       <input id="shine" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <div class="ctl">
+      <label for="eyes" data-i18n-title="ctl.eyesTitle" title="Evens bags, creases and dark circles under the eyes and lifts them a little towards the cheek's tone. The skin's grain stays. Raise it for heavy bags."><span data-i18n="ctl.eyes">Under-eyes</span> <span id="yval">0</span></label>
+      <input id="eyes" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <div class="ctl">
+      <label for="tone" data-i18n-title="ctl.toneTitle" title="Brightens skin that is much darker than most faces and tones down skin that is much brighter; a face in between is left as it is. This changes how light or dark the skin looks, so use it only when that is wanted."><span data-i18n="ctl.tone">Balance skin tone</span> <span id="nval">0</span></label>
+      <input id="tone" type="range" min="0" max="100" value="0" disabled>
     </div>
     <div class="ctl">
       <label for="pores"><span data-i18n="ctl.pores">Add pores</span> <span id="pval">0</span></label>

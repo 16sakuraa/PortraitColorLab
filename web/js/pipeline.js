@@ -13,6 +13,7 @@ import { landmarks, zones, earZones } from './face_landmarks.js';
 import { smoothFace, smoothAgain, detailSigma, PRINT_GRAIN, LIGHTING } from './smooth.js';
 import * as maskEdit from './mask_edit.js';
 import * as heal from './heal.js';
+import * as look from './look.js';
 
 const LIB = new URL('../lib/', import.meta.url).href;
 const MODELS = new URL('../models/', import.meta.url).href;
@@ -67,21 +68,28 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
   const area = seg ? skinArea(cv, seg, faces, faceOnly) : null;
   const outlines = points.map((p) => p && zones(cv, p, bgr.cols, bgr.rows));
   const ears = points.map((p) => p && earZones(cv, p, bgr.cols, bgr.rows));
-  const mask = buildSkinMask(cv, bgr, faces, 1.0, area, seg ? seg.covered : [], outlines, ears);
+  // The mask, and all the skin with the eyes, brows, lips and ears in (look.js's steps go by it).
+  const whole = area && faceOnly ? skinArea(cv, seg, faces, false) : area;
+  const { area: allSkin, ...mask } = buildSkinMask(cv, bgr, faces, 1.0, area, seg ? seg.covered : [], outlines, ears, whole);
+  const skin = { x0: mask.x0, y0: mask.y0, w: mask.w, h: mask.h, data: allSkin };
   const classic = blemishEngine === 'classic';
   let corr, count;
   if (classic) ({ corr, count } = blemishClassic.correction(cv, bgr, faces, mask));
   else if (previous) ({ corr, healed: count } = previous);     // the network doesn't use the mask
   else ({ corr, count } = await blemish.correction(cv, ort, healer, bgr, faces));
-  return { faces, seg, points, mask, corr, healed: count, healedUnit: classic ? 'spots' : 'faces' };
+  return {
+    faces, seg, points, mask, corr, healed: count, healedUnit: classic ? 'spots' : 'faces',
+    area: skin, luma: look.skinLuma(bgr, mask, faces),
+  };
 }
 
 // params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1, shine: 0..1 (optional),
-// print: 'large' | 'small', lighting: 'soft' | 'hard', strokes (optional, the brush's) }.
+// print: 'large' | 'small', lighting: 'soft' | 'hard', eyes: 0..1 and tone: 0..1 (optional,
+// look.js's under-eyes and skin tone), strokes (optional, the brush's) }.
 // The parity tool passes grain and light (numbers) instead of print and lighting.
 // The analysis already holds the strokes' mask edits (withEdits); the heal and spot
 // strokes are painted here, after the spot fills and before smoothing, Smooth again
-// after the smoothing, and the light strokes last.
+// after the smoothing, then under-eyes and skin tone, and the light strokes last.
 export function render(bgr, analysis, params) {
   const { cv } = state;
   const filled = blemish.apply(cv, bgr, analysis.corr, params.blemish);
@@ -98,6 +106,10 @@ export function render(bgr, analysis, params) {
     smoothed = again;
   }
   healed.delete();
+  // Under-eyes and skin tone (off unless asked for), on the smoothed result.
+  const finished = look.finish(cv, smoothed, analysis.mask, analysis.area, analysis.points, analysis.luma,
+    params.eyes ?? 0, params.tone ?? 0);
+  if (finished !== smoothed) { smoothed.delete(); smoothed = finished; }
   // The light brush paints tone on the smoothed result, keeping the grain it kept.
   const out = heal.applyLight(cv, smoothed, params.strokes, detailSigma(bgr.rows, bgr.cols, analysis.faces, grain));
   if (out !== smoothed) smoothed.delete();
@@ -112,7 +124,7 @@ export function editLayer(w, h, strokes, previous = null) {
 
 // An analysis with the brush's edits applied, for an image of this size.
 // The spot fills follow their own layer once there's an Undo smoothing stroke, and
-// Smooth again its own (again: null without one).
+// Smooth again its own (again: null without one). The skin area follows the fills'.
 export function withEdits(analysis, layer, w, h) {
   if (!layer || !layer.strokes.length) return analysis;
   const region = maskEdit.regionOf(state.cv, layer, w, h);
@@ -122,6 +134,7 @@ export function withEdits(analysis, layer, w, h) {
   return {
     ...analysis, mask: maskEdit.applyToMask(analysis.mask, region),
     corr: maskEdit.applyToCorrection(analysis.corr, fills), again,
+    area: analysis.area && maskEdit.applyToMask(analysis.area, fills),
   };
 }
 
@@ -139,16 +152,21 @@ export function maskBytes(mask, w, h) {
 // without running the networks again).
 export function scaleAnalysis(analysis, s, previewW, previewH) {
   const { cv } = state;
-  const m = analysis.mask;
-  const mat = cv.matFromArray(m.h, m.w, cv.CV_32F, m.data);
-  const w = Math.max(1, Math.round(m.w * s)), h = Math.max(1, Math.round(m.h * s));
-  const small = new cv.Mat();
-  cv.resize(mat, small, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
-  const x0 = Math.min(previewW - 1, Math.round(m.x0 * s)), y0 = Math.min(previewH - 1, Math.round(m.y0 * s));
-  const mask = { x0, y0, w: Math.min(w, previewW - x0), h: Math.min(h, previewH - y0), data: null };
-  mask.data = new Float32Array(mask.w * mask.h);
-  for (let y = 0; y < mask.h; y++) for (let x = 0; x < mask.w; x++) mask.data[y * mask.w + x] = small.data32F[y * w + x];
-  mat.delete(); small.delete();
+  const shrunk = (m) => {
+    const mat = cv.matFromArray(m.h, m.w, cv.CV_32F, m.data);
+    const w = Math.max(1, Math.round(m.w * s)), h = Math.max(1, Math.round(m.h * s));
+    const small = new cv.Mat();
+    cv.resize(mat, small, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+    const x0 = Math.min(previewW - 1, Math.round(m.x0 * s)), y0 = Math.min(previewH - 1, Math.round(m.y0 * s));
+    const out = { x0, y0, w: Math.min(w, previewW - x0), h: Math.min(h, previewH - y0), data: null };
+    out.data = new Float32Array(out.w * out.h);
+    for (let y = 0; y < out.h; y++) for (let x = 0; x < out.w; x++) out.data[y * out.w + x] = small.data32F[y * w + x];
+    mat.delete(); small.delete();
+    return out;
+  };
+  const mask = shrunk(analysis.mask);
+  const area = analysis.area && shrunk(analysis.area);
+  const points = analysis.points && analysis.points.map((p) => p && p.map((v) => v * s));
   let corr = blemish.scaleCorrection(cv, analysis.corr, s);
   if (corr) {   // clip to the preview
     const cw = Math.min(corr.w, previewW - corr.x0), ch = Math.min(corr.h, previewH - corr.y0);
@@ -160,7 +178,7 @@ export function scaleAnalysis(analysis, s, previewW, previewH) {
     }
   }
   const faces = analysis.faces.map((f) => f.map((v, k) => (k < 14 ? v * s : v)));  // the last value is the score
-  return { ...analysis, mask, corr, faces };
+  return { ...analysis, mask, corr, faces, area, points };
 }
 
 export const engine = () => state?.engine;

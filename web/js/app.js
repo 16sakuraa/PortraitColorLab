@@ -2,6 +2,7 @@
 
 import { attachCompareZoom } from './compare_zoom.js';
 import { attachHistory } from './history.js';
+import { attachLook } from './looks.js';
 import { attachMaskBrush, attachSteps } from './mask_brush.js';
 import { t, translatePage, attachLangSwitch, onLangChange } from './i18n.js';
 
@@ -23,6 +24,8 @@ const brush = attachMaskBrush({
 const zoom = attachCompareZoom([$('before'), $('after')]);
 // The settings and brush tools in three steps, like DM Portrait's: Skin, Smooth, Finish.
 const steps = attachSteps({ panel: document.querySelector('.tools'), brush, navBefore: $('historybox') });
+// A look puts its settings in the controls (before History, so its entry holds them).
+attachLook({ select: $('look'), onApply: () => scheduleRender() });
 // Every change listed, to go back to any of them, with Undo and Redo.
 const history = attachHistory({ host: $('historybox'), brush, render: () => requestRender() });
 // While a new photo's first result is on its way, the Retouched side shows that photo
@@ -64,6 +67,8 @@ const params = () => ({
   strength: +$('strength').value / 100,
   texture: +$('texture').value / 100,
   shine: +$('shine').value / 100,
+  eyes: +$('eyes').value / 100,
+  tone: +$('tone').value / 100,
   pores: +$('pores').value / 100,
   print: $('print').value,
   lighting: $('lighting').value,
@@ -73,7 +78,7 @@ const params = () => ({
 });
 
 function setControls(enabled) {
-  for (const id of ['blemish', 'strength', 'texture', 'shine', 'pores', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
+  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
 let summary = () => '', opened = null;
@@ -188,7 +193,7 @@ $('drop').addEventListener('dragleave', () => $('drop').classList.remove('over')
 $('drop').addEventListener('drop', (e) => { e.preventDefault(); $('drop').classList.remove('over'); openFile(e.dataTransfer.files[0]); });
 $('file').addEventListener('change', (e) => openFile(e.target.files[0]));
 
-for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['shine', 'rval'], ['pores', 'pval']]) {
+for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['shine', 'rval'], ['eyes', 'yval'], ['tone', 'nval'], ['pores', 'pval']]) {
   $(id).addEventListener('input', () => { $(label).textContent = $(id).value; scheduleRender(); });
 }
 

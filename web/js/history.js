@@ -18,10 +18,13 @@ const MAX_ENTRIES = 300;   // the oldest changes (after Photo opened) drop off b
 // The settings recorded, by element id, with the word for each; sliders show their
 // value in a label beside them.
 const FIELDS = [
+  { id: 'look', key: 'ctl.look' },
   { id: 'blemish', key: 'ctl.blemish', shows: 'bval' },
   { id: 'strength', key: 'ctl.strength', shows: 'sval' },
   { id: 'texture', key: 'ctl.texture', shows: 'tval' },
   { id: 'shine', key: 'ctl.shine', shows: 'rval' },
+  { id: 'eyes', key: 'ctl.eyes', shows: 'yval' },
+  { id: 'tone', key: 'ctl.tone', shows: 'nval' },
   { id: 'pores', key: 'ctl.pores', shows: 'pval' },
   { id: 'lighting', key: 'ctl.lighting' },
   { id: 'print', key: 'ctl.print' },

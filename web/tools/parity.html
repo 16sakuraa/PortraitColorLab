@@ -16,7 +16,7 @@ const st = await pipeline.init(log, { blemishEngine: params.blemish_engine });
 log('engine: ' + st.engine + ', blemish: ' + st.blemishEngine);
 const save = async (name, blob) => fetch('/__save/' + name, { method: 'POST', body: blob });
 const png = async (image) => { const c = new OffscreenCanvas(image.width, image.height); c.getContext('2d').putImageData(image, 0, 0); return c.convertToBlob({ type: 'image/png' }); };
-const results = {};
+const results = {}, lumas = {};
 for (const n of names) {
   const { image } = await decode(await (await fetch('../test/' + n + '.png')).blob());
   const bgr = matFromImage(st.cv, image);
@@ -31,6 +31,12 @@ for (const n of names) {
   const small = pipeline.render(bgr, a, { ...params, pores: params.pores_stage, grain: params.grain_stage });
   const shiny = pipeline.render(bgr, a, { ...params, shine: params.shine_stage });
   const hard = pipeline.render(bgr, a, { ...params, light: params.light_stage });
+  const looked = pipeline.render(bgr, a, { ...params, eyes: params.eyes_stage, tone: params.tone_stage });
+  const toned = pipeline.render(bgr, { ...a, luma: params.tone_luma }, { ...params, eyes: params.eyes_stage, tone: params.tone_stage });
+  await save(n + '.look.png', await png(imageFromMat(st.cv, looked)));
+  await save(n + '.tone.png', await png(imageFromMat(st.cv, toned)));
+  looked.delete(); toned.delete();
+  lumas[n] = a.luma;
   const wholeMask = (m) => {
     const full = new Float32Array(bgr.rows * bgr.cols);
     for (let y = 0; y < m.h; y++) full.set(m.data.subarray(y * m.w, (y + 1) * m.w), (y + m.y0) * bgr.cols + m.x0);
@@ -39,6 +45,8 @@ for (const n of names) {
   await save(n + '.mask.f32', new Blob([wholeMask(a.mask)]));
   const faceOnly = await pipeline.analyze(bgr, { faceOnly: true, previous: a });
   await save(n + '.mask_face.f32', new Blob([wholeMask(faceOnly.mask)]));
+  await save(n + '.area_face.f32', new Blob([wholeMask(faceOnly.area)]));
+  await save(n + '.area.f32', new Blob([wholeMask(a.area)]));
   const layer = pipeline.editLayer(bgr.cols, bgr.rows, params.brush_strokes);
   const brushedAnalysis = pipeline.withEdits(a, layer, bgr.cols, bgr.rows);
   await save(n + '.mask_brush.f32', new Blob([wholeMask(brushedAnalysis.mask)]));
@@ -60,6 +68,7 @@ for (const n of names) {
   log(`${n}: ${JSON.stringify(results[n])}`);
   bgr.delete(); healedOnly.delete(); final.delete(); withPores.delete(); small.delete(); shiny.delete(); hard.delete();
 }
+await save('lumas.json', new Blob([JSON.stringify(lumas)]));
 window.parityDone = results;
 log('done');
 </script>

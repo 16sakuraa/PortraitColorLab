@@ -23,6 +23,7 @@ import smoother  # noqa: E402
 import blemish  # noqa: E402
 import blemish_classic  # noqa: E402
 import heal  # noqa: E402
+import look  # noqa: E402
 import mask_edit  # noqa: E402
 import skin_segment  # noqa: E402
 import face_landmarks  # noqa: E402
@@ -1493,6 +1494,213 @@ def test_the_updater_is_off_from_source_and_when_switched_off():
             os.environ["SKINSMOOTHER_NO_UPDATE"] = had_switch
 
 
+# ---------- under-eyes and skin tone (look.py) ----------
+
+def eye_points() -> np.ndarray:
+    """outline_points() with real lower lids: each a shallow arc from the outer corner to
+    the inner one, the eyes 200 px apart at y 300 and the chin at the outline's foot."""
+    pts = outline_points()
+    for lid, outer, inner in ((face_landmarks.LOWER_LID_R, 270, 330), (face_landmarks.LOWER_LID_L, 530, 470)):
+        for k, i in enumerate(lid):
+            u = k / (len(lid) - 1)
+            pts[i] = outer + u * (inner - outer), 300 + 12 * np.sin(np.pi * u)
+    return pts
+
+
+def eye_photo(circle: float = 30.0) -> np.ndarray:
+    """Even skin with grain, and a dark circle under the eye on the left of the photo."""
+    rng = np.random.default_rng(5)
+    yy, xx = np.mgrid[0:800, 0:800].astype(np.float32)
+    tone = 170 + rng.normal(0, 3, (800, 800)) - circle * np.exp(-((xx - 300) ** 2 + (yy - 338) ** 2) / (2 * 15.0 ** 2))
+    return np.clip(np.dstack([tone * 0.72, tone * 0.83, tone]), 0, 255).astype(np.uint8)
+
+
+def test_under_eye_zones_lie_below_the_lids_and_follow_the_face():
+    zones, (dx, dy), eye_d = face_landmarks.under_eye_zones(eye_points(), 800, 800)
+    area = painted(zones, 800, 800)
+    assert len(zones) == 2 and eye_d == 200 and abs(dx) < 1e-9 and dy == 200, "one eye distance down the face"
+    assert area[340, 300] == 255 and area[340, 500] == 255, "under each eye"
+    assert area[298, 300] == 0 and area[302, 275] == 0, "the eye itself and its lid stay out"
+    assert area[340, 338] == 255 and area[340, 345] == 0, "a little past the inner corner, towards the nose"
+    assert area[340, 265] == 255 and area[340, 258] == 0, "less past the outer one"
+    assert area[372, 300] == 255 and area[385, 300] == 0, "down as far as dark circles reach"
+    # The same face upside down: the zones are still on its chin's side.
+    flipped = eye_points() * (1, -1) + (0, 800)
+    zones, (dx, dy), _ = face_landmarks.under_eye_zones(flipped, 800, 800)
+    assert dy == -200 and painted(zones, 800, 800)[460, 300] == 255
+    assert face_landmarks.under_eye_zones(eye_points() - (0, 2000), 800, 800)[0] == [], "off the photo"
+
+
+def test_look_is_off_by_default_and_without_landmarks():
+    img, mask = eye_photo(), np.ones((800, 800), np.float32)
+    assert look.finish(img, mask, mask, [eye_points()], 0.4) is img, "both steps are off unless asked for"
+    assert look.under_eyes(img, [None], mask, 1.0) is img and look.under_eyes(img, [], mask, 1.0) is img
+    assert look.under_eyes(img, [eye_points()], np.zeros((800, 800), np.float32), 1.0) is img, "no skin, no change"
+    assert look.balance(img, mask, None, 1.0) is img, "no measured brightness, no change"
+
+
+def test_under_eyes_evens_a_dark_circle_and_keeps_the_grain():
+    img, mask = eye_photo(), np.ones((800, 800), np.float32)
+    luma = lambda a: a[328:348, 290:310].astype(np.float32).mean()
+    out = look.under_eyes(img, [eye_points()], mask, 1.0)
+    half = look.under_eyes(img, [eye_points()], mask, 0.5)
+    clean = float(img[328:348, 490:510].mean())
+    gap, left, left_half = clean - luma(img), clean - luma(out), clean - luma(half)
+    assert gap > 15 and left < 0.5 * gap, (gap, left)
+    assert left < left_half < gap, "half the amount, less of it"
+    green = lambda a: a[:, :, 1].astype(np.float32)
+    fine = lambda a: (green(a) - cv2.GaussianBlur(green(a), (0, 0), 2))[320:360, 280:320].std()
+    assert 0.9 < fine(out) / fine(img) < 1.1, "the grain stays"
+    assert abs(float(out[328:348, 490:510].mean()) - clean) < 1.0, "even skin under the other eye stays as it is"
+    assert np.array_equal(out[450:], img[450:]) and np.array_equal(out[:290], img[:290]), "nothing away from the eyes"
+    assert np.array_equal(out[:, :200], img[:, :200])
+
+
+def test_under_eyes_keeps_to_the_mask_and_is_safe_at_the_photo_edge():
+    img = eye_photo()
+    mask = np.ones((800, 800), np.float32)
+    mask[:, :300] = 0                                       # a Restore stroke over half the zone
+    out = look.under_eyes(img, [eye_points()], mask, 1.0)
+    assert np.array_equal(out[:, :300], img[:, :300]) and not np.array_equal(out[:, 300:], img[:, 300:])
+    low = eye_points() + (0, 470)                           # the cheeks are off the photo
+    assert look.under_eyes(img, [low], np.ones((800, 800), np.float32), 1.0).shape == img.shape
+    assert look.under_eyes(img, [eye_points() + (0, 1000)], np.ones((800, 800), np.float32), 1.0) is img
+
+
+def test_skin_brightness_is_read_from_the_faces_skin():
+    img = np.full((400, 600, 3), 200, np.uint8)
+    img[100:300, 100:300] = (60, 120, 180)                  # the face
+    mask = np.ones((400, 600), np.float32)
+    mask[100:300, 100:150] = 0.5                            # its soft edge doesn't count
+    faces = rows(face_row(100, 100, 200, 200))
+    expected = (114 * 60 + 587 * 120 + 299 * 180) / 255000
+    assert abs(look.skin_luma(img, mask, faces) - expected) < 1e-9
+    assert abs(look.skin_luma(img, mask, None) - 200 / 255) < 1e-9, "without faces, all the skin in the mask"
+    assert look.skin_luma(img, np.zeros((400, 600), np.float32), faces) is None
+    assert look.skin_luma(img, mask, rows(face_row(700, 500, 50, 50))) is None, "a face off the photo"
+
+
+def test_skin_tone_leaves_the_middle_range_alone_and_pulls_the_rest_part_way():
+    t = look.BALANCE
+    for luma in (t["centre"], t["centre"] - 0.9 * t["slack"], t["centre"] + 0.9 * t["slack"]):
+        assert look.wanted_luma(luma, 1.0) == luma
+    dark, bright = t["centre"] - t["slack"] - 0.1, t["centre"] + t["slack"] + 0.1
+    assert abs(look.wanted_luma(dark, 1.0) - (dark + 0.1 * t["pull"])) < 1e-9
+    assert abs(look.wanted_luma(bright, 1.0) - (bright - 0.1 * t["pull"])) < 1e-9
+    assert abs(look.wanted_luma(dark, 0.5) - (dark + 0.05 * t["pull"])) < 1e-9, "half the amount, half the way"
+    assert look.wanted_luma(dark, 0.0) == dark
+    assert abs(look.wanted_luma(0.1, 1.0) - (0.1 + t["limit"])) < 1e-9, "never further than the limit"
+    assert dark < look.wanted_luma(dark, 1.0) < t["centre"] - t["slack"], "never past the range's edge"
+
+
+def test_skin_tone_moves_dark_skin_to_where_it_should_be_through_the_area_only():
+    img = (skin_photo(600, 600).astype(np.float32) * 0.62).astype(np.uint8)      # dark skin
+    img[:, 540:550] = 0
+    img[10:20, 10:20] = 255
+    area = np.zeros((600, 600), np.float32)
+    area[:, :400] = 1.0
+    area[:, 400:450] = 0.5
+    faces = rows(face_row(50, 50, 300, 400))
+    luma = look.skin_luma(img, area, faces)
+    want = look.wanted_luma(luma, 1.0)
+    assert luma < look.BALANCE["centre"] - look.BALANCE["slack"] and want > luma + 0.02
+    out = look.balance(img, area, luma, 1.0)
+    assert abs(look.skin_luma(out, area, faces) - want) < 0.006, (look.skin_luma(out, area, faces), want)
+    assert np.array_equal(out[:, 450:], img[:, 450:]), "nothing outside the area"
+    assert (out[10:20, 10:20] == 255).all(), "white stays white"
+    part = float(out[:, 410:440, 2].astype(np.float32).mean() - img[:, 410:440, 2].mean())
+    full = float(out[:, 300:390, 2].astype(np.float32).mean() - img[:, 300:390, 2].mean())
+    assert 0.3 * full < part < 0.7 * full, "half as much where the area is half"
+    ratio = lambda a: a[:, :400, 0].astype(np.float32).mean() / a[:, :400, 2].astype(np.float32).mean()
+    assert ratio(out) > ratio(img), "brightening takes a little colour out, as a curve on the skin does"
+    half = look.balance(img, area, luma, 0.5)
+    assert luma < look.skin_luma(half, area, faces) < look.skin_luma(out, area, faces)
+    black = np.zeros((50, 50, 3), np.uint8)
+    assert not look.balance(black, np.ones((50, 50), np.float32), luma, 1.0).any(), "black stays black"
+    # A bright face comes down, and one in the middle of the range isn't touched.
+    light = np.clip(skin_photo(600, 600).astype(np.float32) * 1.22, 0, 255).astype(np.uint8)
+    luma = look.skin_luma(light, area, faces)
+    assert look.skin_luma(look.balance(light, area, luma, 1.0), area, faces) < luma - 0.02
+    assert look.balance(img, area, look.BALANCE["centre"], 1.0) is img
+
+
+def test_the_pages_and_the_window_have_the_same_looks():
+    import re
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "js", "looks.js"),
+                  encoding="utf-8").read()
+    on_pages = {name: dict(re.findall(r"(\w+): '([\w.]+)'", body))
+                for name, body in re.findall(r"^  (\w+): \{([^}]*)\},$", source, re.M)}
+    assert set(on_pages) == set(look.LOOKS) == {"natural", "studio"}
+    for name, values in look.LOOKS.items():
+        as_shown = {k: v if isinstance(v, str) else f"{round(v * 100)}" for k, v in values.items()}
+        assert on_pages[name] == as_shown, (name, on_pages[name], as_shown)
+    assert all(v["lighting"] in smoother.LIGHTING and v["print"] in smoother.PRINT_GRAIN for v in look.LOOKS.values())
+    natural = look.LOOKS["natural"]
+    assert natural["eyes"] == 0 and natural["tone"] == 0, "how the app opens: both steps off"
+
+
+def test_the_skin_area_keeps_what_the_mask_cuts_and_the_landmarks_come_with_it():
+    img, faces, points = skin_photo(800, 800), rows(face_row(150, 50, 500, 660)), [outline_points()]
+    saved = skin_segment.segment, face_landmarks.landmarks
+    try:
+        skin_segment.segment, face_landmarks.landmarks = all_skin, lambda _b, _f: points
+        mask, area, found = smoother.skin_layers(img, faces=faces, face_only=True)
+        assert np.array_equal(mask, smoother.build_skin_mask(img, faces=faces, face_only=True))
+    finally:
+        skin_segment.segment, face_landmarks.landmarks = saved
+    assert found is points
+    assert mask[300, 300] < 0.05 and mask[322, 80] < 0.05, "an eye and an ear are out of the mask"
+    assert area[300, 300] > 0.95 and area[322, 80] > 0.95, "and in the area"
+    assert (area >= mask - 1e-6).all()
+    plain = smoother.skin_layers(img, faces=np.zeros((0, 15), np.float32))
+    assert plain[2] == [] and np.array_equal(plain[0], plain[1]), "without a face nothing is cut"
+
+
+def test_the_skin_area_has_the_body_in_even_with_face_only():
+    img, faces = skin_photo(800, 800), rows(face_row(150, 50, 500, 500))
+    asked = []
+
+    def model(seg, _faces, face_only=False):
+        """A face's skin over the top of the photo, and the body's below it unless Face only."""
+        asked.append(face_only)
+        area = np.zeros((800, 800), np.float32)
+        area[:(600 if face_only else 800)] = 1.0
+        return 0, 0, area
+
+    saved = skin_segment.segment, skin_segment.skin_area, face_landmarks.landmarks
+    try:
+        skin_segment.segment, skin_segment.skin_area = all_skin, model
+        face_landmarks.landmarks = lambda _b, _f: [outline_points()]
+        mask, area, _ = smoother.skin_layers(img, faces=faces, face_only=True)
+        assert asked == [True, False]
+        assert mask[700, 400] == 0 and area[700, 400] == 1, "the neck: not smoothed, but in the area"
+        assert mask[300, 300] < 0.05 and area[300, 300] == 1, "an eye, as before"
+        asked.clear()
+        both, area, _ = smoother.skin_layers(img, faces=faces)
+        assert asked == [False] and both[700, 400] == 1 and area[700, 400] == 1, "without Face only, one and the same"
+    finally:
+        skin_segment.segment, skin_segment.skin_area, face_landmarks.landmarks = saved
+
+
+def test_a_restore_stroke_brings_the_original_back_under_both_steps():
+    img = eye_photo()
+    dark = (img.astype(np.float32) * 0.6).astype(np.uint8)
+    mask = np.ones((800, 800), np.float32)
+    strokes = [{"id": 1, "mode": "protect", "size": 0.2, "soft": 0.2, "points": [0.375, 0.42, 0.376, 0.43]},
+               {"id": 2, "mode": "unsmooth", "size": 0.1, "soft": 0.2, "points": [0.625, 0.42, 0.626, 0.43]}]
+    region, fills, _ = mask_edit.edits(strokes, 800, 800)
+    edited, area = mask_edit.apply_to_mask(mask, region), mask_edit.apply_to_mask(mask, fills)
+    luma = look.skin_luma(dark, mask, None)
+    out = look.finish(dark, edited, area, [eye_points()], luma, 1.0, 1.0)
+    assert not np.array_equal(out[700:], dark[700:]), "the skin tone moved elsewhere"
+    assert edited[330:350, 290:310].max() < 1e-3, "well inside the Restore stroke"
+    assert np.array_equal(out[330:350, 290:310], dark[330:350, 290:310]), "Restore: the photo as it was, under the eye too"
+    undone = out[320:350, 485:515].astype(int) - dark[320:350, 485:515]
+    assert undone.mean() > 5, "Undo smoothing keeps the skin tone, like the other fixes"
+    alone = look.balance(dark, area, luma, 1.0)
+    assert np.array_equal(out[320:350, 485:515], alone[320:350, 485:515]), "but not the under-eye step"
+
+
 def i18n_strings():
     """The keys and words of web/js/i18n.js: {"en": {key: text}, "th": {...}}."""
     import re
@@ -1517,6 +1725,9 @@ def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
     read = lambda *path: open(os.path.join(root, *path), encoding="utf-8").read()
     pages = read("index.html") + serve.PAGE
     scripts = read("js", "app.js") + read("js", "mask_brush.js") + read("js", "history.js") + serve.PAGE
+    fields = re.findall(r"\{ id: '(\w+)', key: '([\w.]+)'", read("js", "history.js"))
+    assert len(fields) > 8 and {key for _, key in fields} <= set(en), "History's names for the settings"
+    assert all(f'id="{i}"' in read("index.html") and f'id="{i}"' in serve.PAGE for i, _ in fields), "on both pages"
     used = set(re.findall(r'data-i18n(?:-html|-title|-alt|-aria)?="([\w.]+)"', pages))
     used |= set(re.findall(r"\bt\('([\w.]+)'", scripts))
     for m in ("protect", "unsmooth", "skin", "heal", "spot", "light", "line", "resmooth", "removeSkin"):
@@ -1529,7 +1740,8 @@ def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
     used |= {"update.downloading", "update.ready", "update.failed"}
     assert len(used) > 120 and used <= set(en), sorted(used - set(en))
     assert b"attachLangSwitch" in serve._web_script("i18n.js"), "the desktop app serves the words too"
-    for name, export in (("compare_zoom.js", b"attachCompareZoom"), ("history.js", b"attachHistory")):
+    for name, export in (("compare_zoom.js", b"attachCompareZoom"), ("history.js", b"attachHistory"),
+                         ("looks.js", b"attachLook")):
         assert export in serve._web_script(name), f"and {name}"
 
 
@@ -1539,9 +1751,13 @@ def test_the_desktop_preview_scales_the_analysis_without_finding_anything_again(
     faces = FACE.copy()
     mask = np.ones((2400, 3200), np.float32)
     corr = (3100, 2300, np.full((100, 100, 3), 8.0, np.float32))    # reaching the photo's corner
-    full = (img, None, faces, mask, corr, 3)
-    small, info, f, m, c, count = serve.scaled_analysis(full, 1600)
+    points = [np.array([[3200.0, 2400.0], [800.0, 400.0]]), None]
+    full = (img, None, faces, mask, corr, 3, {"area": mask.copy(), "points": points, "luma": 0.5})
+    small, info, f, m, c, count, extra = serve.scaled_analysis(full, 1600)
     assert small.shape == (1200, 1600, 3) and m.shape == (1200, 1600) and count == 3
+    assert extra["area"].shape == (1200, 1600) and extra["luma"] == 0.5, "the skin area shrinks, the brightness is kept"
+    assert np.allclose(extra["points"][0], [[1600, 1200], [400, 200]]) and extra["points"][1] is None
+    assert points[0][0, 0] == 3200.0, "the full-size landmarks are left as they were"
     assert np.allclose(f[0, :4], [150, 100, 200, 250]) and f[0, 14] == np.float32(0.9), "positions scaled, score kept"
     assert np.array_equal(faces, FACE), "the full-size faces are left as they were"
     x0, y0, fills = c
