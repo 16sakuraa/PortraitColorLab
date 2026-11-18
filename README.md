@@ -39,10 +39,11 @@ skin is usually the most they allow.
   segmentation tells skin from hair, clothes and background, and Google's Face Mesh V2
   outlines the eyes, brows and lips so smoothing leaves them alone.
 - **The retouch itself is ordinary image processing.** Blemish removal, smoothing,
-  Reduce shine, Lighting, Under-eyes, Balance skin tone and every brush only blend and
-  move pixels of the same photo;
+  Reduce shine, Lighting, Under-eyes, Balance skin tone, Tidy stray hairs, Thin
+  moustache and every brush only blend and move pixels of the same photo;
   Add pores adds a fixed, computed grain pattern. There is no generative AI: nothing is
-  made up, the shape of the face and its features stay as they are, and the same photo
+  made up, the shape of the face and its features stay as they are (Straighten head
+  turns the whole head; it doesn't reshape it), and the same photo
   with the same settings gives the same result each time. The app can't remove a beard,
   change hair or reshape a face.
 - **Your photos stay with you.** The models are inside the `.exe`, or downloaded once by
@@ -74,13 +75,19 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   pores. Sizes follow the face, so results don't depend on the crop.
 - **Reduce shine:** tames the bright glints of oily skin: grain that is brighter
   than its surroundings, nearly colourless, and on the brighter parts of the face.
-  Dark pores, freckles and coloured marks are left alone. Off by default.
+  It also takes large shiny patches down: skin tone brighter than the face's own
+  brighter skin is pulled part of the way back to that colour, so a glossy forehead
+  or cheek goes towards matte without turning grey, and the grain stays. It can't
+  tell shine from light, so a high setting also flattens the shading of a face that
+  isn't shiny a little; each face in a group is judged against its own skin. Dark
+  pores, freckles and coloured marks are left alone. Off by default.
 - **Add pores:** adds fine synthetic pore texture, for soft skin or strong
   smoothing. Off by default.
 - **Lighting:** for hard or patchy light (on-camera flash, a bare window), evens
   out mottled light and shadow a few millimetres across, while keeping the face's
-  shading so it doesn't look puffy. It doesn't blend a sharp shadow edge. Soft
-  studio light, the default, needs nothing extra.
+  shading so it doesn't look puffy. It doesn't blend a sharp shadow edge, and the
+  nose is evened only as on soft light, so it keeps its shape. Soft studio light,
+  the default, needs nothing extra.
 - **Print size:** for a small print such as a 1-inch ID photo, keeps coarser skin
   grain, because grain finer than a printed dot disappears at that size. The
   print then keeps as much texture as Keep texture asks for. It looks coarser on
@@ -93,6 +100,25 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   the range; a face in between is left alone. It changes how light or dark a
   complexion looks, not just exposure, so whether to use it is a matter of taste: the
   amounts follow one portrait studio's retouching of ID photos. Off by default.
+- **Tidy stray hairs:** removes stray hairs sticking out around the head, against a
+  plain backdrop: anything thin that differs from the backdrop just outside the
+  person's outline is replaced by the backdrop around it. A busy background is left
+  alone, and the hair's own outline isn't redrawn. Off by default.
+- **Thin moustache:** takes a thin moustache, or its shadow, off the upper lip. The
+  skin there is put in anew, not just lightened: the tone of a bare upper lip, fitted
+  to the face and matched to the clear skin beside the hair, with the cheeks' own
+  grain. It is for a portrait taken straight on with the mouth closed, as for an ID
+  photo, and acts on no other face: a smile or a turned head puts shadows on the lip
+  that aren't hair. A lip with nothing on it is left as it is, and so is a full,
+  dense moustache; what counts as nothing was set on one studio's portraits, so
+  under other light check the result. A beard or stubble around the mouth stays, so
+  leave it off for a face with one. It can't tell a mole from hair: a mark right
+  above the lip goes with it, and the brush's Restore brings it back. Off by default.
+- **Straighten head:** turns a tilted head upright, by the share of its tilt you set.
+  Everything above the jaw turns as one piece and the turn fades out down the neck, so
+  the shoulders and clothes stay where they are. Nothing is made up and the face keeps
+  its shape. It is the last step, and is left off while the brush is in use. Off by
+  default.
 - **Look:** sets several settings at once. **Natural** is how the app opens.
   **Studio ID photo** follows how a portrait studio retouches ID photos by hand: its
   settings were fitted to before/after pairs of that work (Strength 80, Keep texture

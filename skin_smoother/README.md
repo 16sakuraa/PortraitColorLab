@@ -9,19 +9,25 @@ no external service, nothing taken from the original program.
 1. Finds the faces and builds a soft **skin mask** with a segmentation model, minus
    the eyes, eyebrows, lips and ears, so only skin is treated and edges stay sharp.
 2. **Removes blemishes:** finds small red marks and fills them from the skin around
-   them.
+   them. Optionally (`lip.py`) takes a **thin moustache** off the upper lip, replacing
+   it with the tone of a bare lip and the cheeks' grain, on a face straight on with
+   its mouth closed; a bare lip and a full moustache are left alone.
 3. **Edge-preserving smoothing** flattens blotches and uneven tone, sized to the
    face and reading only from skin. **Lighting** set to hard light reaches the
-   mottled light and shadow that flash leaves, and still keeps the face's shading.
+   mottled light and shadow that flash leaves, and still keeps the face's shading;
+   the nose, whose light and shade at that size are its shape, is evened only as on
+   soft light.
 4. **Keep texture** holds on to pore detail so the result doesn't look like plastic,
    and leaves real edges, lashes and stray hairs alone. **Reduce shine** tames the
    bright glints of oily skin. **Add pores** can add fine synthetic pore texture
    on top. **Print size** set to a small print keeps
    coarser grain, the kind that still shows in a 1-inch ID photo.
 5. Blends the result back through the soft mask.
-6. Optionally (`look.py`) evens the skin **under the eyes**, and **balances skin
+6. Optionally (`look.py`) takes **large shiny patches** down (the other half of Reduce
+   shine), tidies **stray hairs** against a plain backdrop, evens the skin **under the
+   eyes**, and **balances skin
    tone** with one brightness curve on all the skin when a face is much darker or
-   brighter than most. Both are off unless asked for. The **Studio ID photo** look
+   brighter than most. All are off unless asked for. The **Studio ID photo** look
    turns the skin tone step on, together with settings fitted to a portrait studio's
    hand retouching of ID photos.
 
@@ -52,7 +58,8 @@ use Back and Next at the bottom of the panel:
 **Look**, above the steps, sets several of these at once: Natural (how the app opens)
 or Studio ID photo. Moving a setting afterwards shows the look as Custom.
 
-3. **Finish:** **Undo smoothing**, **Restore**, **Heal** and **Remove spot**.
+3. **Finish:** Straighten head, Tidy stray hairs, Thin moustache, and **Undo smoothing**, **Restore**,
+   **Heal** and **Remove spot**.
 
 Everything is redone from the original photo each time, so you can go back to an
 earlier step and change a setting without losing any brush work. New photo and
@@ -161,7 +168,7 @@ python app.py
 - **Remove blemishes** how much of each blemish fill to apply.
 - **Strength** how much to smooth.
 - **Keep texture** higher = more natural pores, lower = glossier.
-- **Reduce shine** tames bright glints on oily skin; dark pores and freckles stay
+- **Reduce shine** tames bright glints and large shiny patches on oily skin; dark pores and freckles stay
   (0 = off).
 - **Add pores** adds fine synthetic pore texture (0 = none).
 - **Lighting** "Hard or patchy (flash)" evens out mottled light and shadow more;
@@ -173,6 +180,12 @@ python app.py
 - **Look** sets Strength, Keep texture, Lighting, Print size, Under-eyes and Balance
   skin tone together: Natural, or Studio ID photo.
 - **Under-eyes** evens bags and dark circles under the eyes (0 = off).
+- **Tidy stray hairs** removes stray hairs around the head on a plain backdrop (0 = off).
+- **Thin moustache** takes a thin moustache or its shadow off the upper lip (0 = off),
+  on a face straight on with its mouth closed. A smiling or turned face, a bare lip
+  and a full moustache are left alone; a beard stays, so leave it off for a face
+  with one; a mole right above the lip goes with the hair (Restore brings it back).
+- **Straighten head** turns a tilted head upright by the share set (0 = off).
 - **Balance skin tone** brings a face much darker or brighter than most part of the
   way back to the middle of the range (0 = off).
 - Compare the Original (left) and Smoothed (right) panes live.
@@ -238,8 +251,10 @@ python smoother.py input.jpg output.jpg --blemish 1 --strength 0.6 --texture 0.6
 
 `--blemish`, `--strength`, `--texture`, `--shine` and `--pores` are 0..1. `--print-size small`
 keeps coarser grain for small prints such as ID photos. `--lighting hard` evens out
-the mottled light and shadow of flash photos. `--under-eyes` and `--skin-tone` (0..1,
-off by default) even the skin under the eyes and balance skin brightness; the Studio
+the mottled light and shadow of flash photos. `--under-eyes`, `--skin-tone`,
+`--stray-hairs`, `--straighten` and `--moustache` (0..1, off by default) even the skin under the eyes,
+balance skin brightness, tidy stray hairs around the head, turn a tilted head upright and take a thin
+moustache off the upper lip; the Studio
 ID photo look is `--strength 0.8 --texture 0.75 --lighting hard --print-size small
 --skin-tone 1`. `--face-only` leaves
 out the neck and other body skin. If no output path is given, it writes

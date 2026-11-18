@@ -18,7 +18,9 @@ Pipeline:
      gently, fine lines more, and leave real edges, lashes and stray hairs alone.
      Optionally tame the bright glints of oily skin, and add synthetic pores.
   5. Composite through the soft mask.
-  6. Optionally (look.py, off unless asked for): even the skin under the eyes, and
+  6. Optionally (look.py, off unless asked for): take large shiny patches down (the
+     other half of Reduce shine), tidy stray hairs against a plain backdrop, even the
+     skin under the eyes, and
      balance the skin's brightness with one curve when a face is much darker or
      brighter than most.
 
@@ -420,8 +422,10 @@ def build_skin_mask(bgr: np.ndarray, feather: float = 1.0, faces=None,
 
 
 def skin_layers(bgr: np.ndarray, feather: float = 1.0, faces=None,
-                face_only: bool = False) -> tuple[np.ndarray, np.ndarray, list]:
-    """build_skin_mask's mask, with what else was found on the way: (mask, area, points).
+                face_only: bool = False, with_seg: bool = False) -> tuple:
+    """build_skin_mask's mask, with what else was found on the way: (mask, area, points),
+    and with_seg the segmentation model's result too (skin_segment.Segments, or None
+    without the model or a face), for look.py's person outline.
 
     area is all the skin, float32 in [0,1]: the mask before the eyes, brows, lips and
     ears are cut from it, and with the body's skin whatever face_only says, for changes
@@ -440,6 +444,7 @@ def skin_layers(bgr: np.ndarray, feather: float = 1.0, faces=None,
     found = False
 
     model_area, covered = None, ()
+    seg = None
     whole_area = None          # the model's skin with the body in: model_area unless face_only
     if faces is not None and len(faces) > 0:
         import skin_segment
@@ -525,6 +530,8 @@ def skin_layers(bgr: np.ndarray, feather: float = 1.0, faces=None,
         ks = max(3, k // 4) | 1
         guard = cv2.dilate(protect, _odd_kernel(ks))
         soft *= 1.0 - cv2.GaussianBlur(guard.astype(np.float32) / 255.0, (ks, ks), 0)
+    if with_seg:
+        return np.clip(soft, 0.0, 1.0), area, points, seg
     return np.clip(soft, 0.0, 1.0), area, points
 
 
@@ -588,7 +595,8 @@ MIN_GRAIN = 0.25          # finer grain, for smoothing a painted area again (hea
 # Lighting. Hard or patchy light (on-camera flash, a bare window) leaves mottled
 # light and shadow a few millimetres across; this many times the brightness
 # smoothing radius evens it out. The face's shading is still kept (contour), so
-# it doesn't look puffy. Soft studio light needs nothing extra.
+# it doesn't look puffy, and the nose stays at the soft-light radius (_nose_map).
+# Soft studio light needs nothing extra.
 LIGHTING = {"soft": 1.0, "hard": 2.0}
 MAX_LIGHT = 3.0
 _LUMA = np.array([0.114, 0.587, 0.299], np.float32)   # B, G, R weights of brightness
@@ -672,12 +680,15 @@ def detail_sigma(shape, faces, grain: float = 1.0) -> float:
 
 
 def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
-                   shape: tuple[int, int]) -> list[tuple[float, np.ndarray | None]]:
+                   shape: tuple[int, int], each: bool = False,
+                   soft: float = 0.25) -> list[tuple[float, np.ndarray | None]]:
     """[(face width in full-resolution pixels, weight map or None)].
 
     Faces of similar size share one smoothing pass. Very different sizes get
     separate passes, blended by a soft map of which face each pixel is nearest
-    to. Most photos have one group, which needs no map.
+    to. Most photos have one group, which needs no map. With each, every face is
+    its own group, in the faces' order (look.py: each face against its own skin).
+    soft: how wide the maps' soft edges are, as a share of the smallest face's width.
     """
     order = np.argsort(widths, kind="stable")
     groups: list[list[int]] = []
@@ -686,6 +697,8 @@ def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
             groups[-1].append(int(i))
         else:
             groups.append([int(i)])
+    if each:
+        groups = [[i] for i in range(len(widths))]
     mean_width = [float(np.exp(np.mean(np.log(widths[g])))) for g in groups]
     if len(groups) == 1:
         return [(mean_width[0], None)]
@@ -704,15 +717,52 @@ def _scale_regions(faces, widths: np.ndarray, scale: float, x0: int, y0: int,
             best[closer] = d[closer]
             nearest[closer] = g
     # Soft edges, but narrower than the smallest face so it fully gets its own pass.
-    sigma = max(2.0, 0.25 * float(widths.min()) * scale)
+    sigma = max(2.0, soft * float(widths.min()) * scale)
     maps = [cv2.GaussianBlur((nearest == g).astype(np.float32), (0, 0), sigma)
             for g in range(len(groups))]
     total = np.sum(maps, axis=0) + 1e-6
     return [(mean_width[g], maps[g] / total) for g in range(len(groups))]
 
 
+# The nose, from the detector's eyes and nose tip, in distances between the eyes (across)
+# and shares of the way from between the eyes to the nose's foot (along).
+NOSE = {
+    "below": 0.25,     # the foot is this share of eyes-to-tip further on than the tip
+    "top": 0.18,       # half-width between the eyes,
+    "foot": 0.33,      # and at the foot, wings included
+    "edge": 0.06,      # the sides fade over this much either way
+    "start": (-0.15, 0.05),   # fades in from above the eye line,
+    "end": (0.95, 1.15),      # and out again past the foot
+}
+
+
+def _nose_map(faces, scale: float, x0: int, y0: int, shape: tuple[int, int]) -> np.ndarray | None:
+    """How much each working pixel is nose, 0..1 float32, or None where no face shows one.
+    From the detector's own points, so it needs no landmark model and is the same in the
+    browser. A row without points (all zero) has no nose."""
+    t = NOSE
+    out = None
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(np.float32)
+    for f in np.asarray(faces, np.float64).reshape(-1, 15):
+        eye_r, eye_l, tip = f[4:6], f[6:8], f[8:10]
+        mid = (eye_r + eye_l) / 2.0
+        across = (eye_l - eye_r) * scale
+        along = (tip - mid) * (1.0 + t["below"]) * scale
+        eye_d2, length2 = float(across @ across), float(along @ along)
+        if not (eye_d2 > 1e-6 and length2 > 1e-6):
+            continue
+        dx, dy = xx - np.float32((mid[0] - x0) * scale), yy - np.float32((mid[1] - y0) * scale)
+        a = (dx * np.float32(along[0]) + dy * np.float32(along[1])) / np.float32(length2)
+        c = np.abs(dx * np.float32(across[0]) + dy * np.float32(across[1])) / np.float32(eye_d2)
+        half = t["top"] + (t["foot"] - t["top"]) * np.clip(a, 0.0, 1.0)
+        w = ((1.0 - _smoothstep(c - half, -t["edge"], t["edge"]))
+             * _smoothstep(a, *t["start"]) * (1.0 - _smoothstep(a, *t["end"]))).astype(np.float32)
+        out = w if out is None else np.maximum(out, w)
+    return out if out is not None and float(out.max()) > 1e-3 else None
+
+
 def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, scale: float,
-                 strength: float, light: float = 1.0) -> np.ndarray:
+                 strength: float, light: float = 1.0, nose_of=None) -> np.ndarray:
     """What to add to each pixel's tone layer, on a reduced copy of the region
     (scaled back up by the caller): float32 BGR, working rows by full width.
 
@@ -720,7 +770,10 @@ def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, sc
     guided by brightness so it can't cross real edges. Changing colour alone
     doesn't flatten a face, but changing brightness can, so the large-scale
     part of each change is removed again: small marks go, shading stays.
-    light widens the brightness radius for hard light (LIGHTING).
+    light widens the brightness radius for hard light (LIGHTING), except on the nose
+    (nose_of: working shape -> _nose_map): at that size a nose's light and shade are its
+    shape, the wings, the tip and the ridge, and evening them flattens it. The hand
+    retouches this was tuned on even the cheeks as hard light does and the nose as soft.
     """
     t = TUNE
     rh, rw = roi.shape[:2]
@@ -761,11 +814,17 @@ def _tone_change(roi: np.ndarray, mask: np.ndarray, regions_of, sigma: float, sc
         return d - t["contour"] * _soft_blur(d * mask_w, sigma_c) / mask_blur(sigma_c)
 
     mask_blurs: dict[float, np.ndarray] = {}
+    nose = nose_of(Y.shape) if nose_of is not None and light > 1.0 else None
     for width, weight in regions_of(Y.shape):
         w = 1.0 if weight is None else weight
         r_y = max(1, round(width * scale * t["luma_radius"] * light))
         r_c = max(2, round(width * scale * t["chroma_radius"]))
-        d_y += w * change(Y, r_y, eps_y)
+        r_nose = max(1, round(width * scale * t["luma_radius"]))
+        if nose is None or r_nose == r_y:
+            d_y += w * change(Y, r_y, eps_y)
+        else:
+            d_y += w * (1.0 - nose) * change(Y, r_y, eps_y)
+            d_y += w * nose * change(Y, r_nose, eps_y)
         d_cr += w * change(Cr, r_c, eps_c)
         d_cb += w * change(Cb, r_c, eps_c)
 
@@ -935,6 +994,7 @@ def smooth_face(
                brighter skin: the glints on oily skin (0 = none).
     light    : 1..MAX_LIGHT  how far brightness is evened out, for the lighting
                (LIGHTING; 1 = soft studio light, larger for hard or patchy light).
+               The nose stays at 1 (_tone_change).
 
     The region is split into a tone layer and a detail layer, using sizes
     relative to the face. The tone layer gets _tone_change. The detail layer is
@@ -987,7 +1047,10 @@ def smooth_face(
     def regions_of(shape):
         return _scale_regions(faces, widths, scale, x0, y0, shape)
 
-    tone = _tone_change(roi, mask_r, regions_of, sigma, scale, strength, light)
+    def nose_of(shape):
+        return _nose_map(faces, scale, x0, y0, shape) if faces is not None and len(faces) else None
+
+    tone = _tone_change(roi, mask_r, regions_of, sigma, scale, strength, light, nose_of)
     work_rows = tone.shape[0]
     level = _detail_level(roi, mask_r, sigma)
     pore_groups = []
@@ -1057,7 +1120,8 @@ def _cli() -> int:
     ap.add_argument("-p", "--pores", type=float, default=0.0,
                     help="add synthetic pore texture 0..1 (default 0, none)")
     ap.add_argument("--shine", type=float, default=0.0,
-                    help="reduce shine: tame bright grain on oily skin 0..1 (default 0, off)")
+                    help="reduce shine: tame bright grain and large shiny patches on oily skin 0..1 "
+                         "(default 0, off)")
     ap.add_argument("--lighting", choices=tuple(LIGHTING), default="soft",
                     help="soft or even light such as a studio softbox (the default), or hard or patchy "
                          "light such as on-camera flash, which evens out mottled light and shadow more")
@@ -1069,6 +1133,12 @@ def _cli() -> int:
     ap.add_argument("--skin-tone", type=float, default=0.0,
                     help="balance skin brightness: bring a face well darker or brighter than the middle "
                          "of the range part of the way back 0..1 (default 0, off)")
+    ap.add_argument("--straighten", type=float, default=0.0,
+                    help="turn a tilted head upright by this share of its tilt 0..1 (default 0, off)")
+    ap.add_argument("--stray-hairs", type=float, default=0.0,
+                    help="tidy stray hairs around the head against a plain backdrop 0..1 (default 0, off)")
+    ap.add_argument("--moustache", type=float, default=0.0,
+                    help="take a thin moustache off the upper lip 0..1 (default 0, off); a full one is left alone")
     ap.add_argument("--face-only", action="store_true",
                     help="treat the face only, not the neck or other body skin")
     ap.add_argument("-b", "--blemish", type=float, default=0.0,
@@ -1085,7 +1155,7 @@ def _cli() -> int:
         return 1
 
     faces = _detect_faces(img)
-    mask, area, points = skin_layers(img, faces=faces, face_only=args.face_only)
+    mask, area, points, seg = skin_layers(img, faces=faces, face_only=args.face_only, with_seg=True)
     healed = img
     if args.blemish > 0:
         import blemish
@@ -1098,12 +1168,17 @@ def _cli() -> int:
         else:
             print("Blemish model not found (models/blemish_ffhqr.onnx); skipping")
 
+    if args.moustache > 0:
+        import lip
+        healed = lip.clear(healed, points, mask, args.moustache)
     out = smooth_face(healed, strength=args.strength, texture=args.texture, mask=mask,
                       faces=faces, pores=args.pores, grain=PRINT_GRAIN[args.print_size],
                       shine=args.shine, light=LIGHTING[args.lighting])
-    if args.under_eyes > 0 or args.skin_tone > 0:
+    if args.under_eyes > 0 or args.skin_tone > 0 or args.shine > 0 or args.stray_hairs > 0 or args.straighten > 0:
         import look
-        out = look.finish(out, mask, area, points, look.skin_luma(img, mask, faces), args.under_eyes, args.skin_tone)
+        out = look.finish(out, mask, area, points, look.skin_luma(img, mask, faces), args.under_eyes, args.skin_tone,
+                          args.shine, faces, look.bright_colours(img, mask, faces),
+                          args.stray_hairs, look.person_of(seg), None, args.straighten)
 
     out_path = args.output
     if not out_path:

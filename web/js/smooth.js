@@ -58,7 +58,8 @@ export const PRINT_GRAIN = { large: 1.0, small: 2.0 };
 export const MAX_GRAIN = 2.5;
 export const MIN_GRAIN = 0.25;   // finer grain, for smoothing a painted area again (heal.js's Smooth again)
 // Lighting (smoother.LIGHTING): hard or patchy light leaves mottled light and
-// shadow, evened out by a wider brightness radius; shading is still kept.
+// shadow, evened out by a wider brightness radius; shading is still kept, and the
+// nose stays at the soft-light radius (noseMap).
 export const LIGHTING = { soft: 1.0, hard: 2.0 };
 export const MAX_LIGHT = 3.0;
 
@@ -137,15 +138,19 @@ export function medianOf(values) {
 
 // [{ width, weight }]: faces of similar size share one smoothing pass. Very
 // different sizes get separate passes, blended by a soft map of which face each
-// pixel is nearest to. Most photos have one group, which needs no map (null).
-export function scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols) {
+// pixel is nearest to. Most photos have one group, which needs no map (null). With
+// each, every face is its own group, in the faces' order (look.js: each face against
+// its own skin). soft: how wide the maps' soft edges are, as a share of the smallest
+// face's width.
+export function scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols, each = false, soft = 0.25) {
   const order = widths.map((_, i) => i).sort((a, b) => widths[a] - widths[b]);
-  const groups = [];
+  let groups = [];
   for (const i of order) {
     const last = groups[groups.length - 1];
     if (last && widths[i] <= GROUP_RATIO * widths[last[0]]) last.push(i);
     else groups.push([i]);
   }
+  if (each) groups = widths.map((_, i) => [i]);
   const meanWidth = groups.map((g) => Math.exp(g.reduce((s, i) => s + Math.log(widths[i]), 0) / g.length));
   if (groups.length === 1) return [{ width: meanWidth[0], weight: null }];
 
@@ -164,7 +169,7 @@ export function scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols) {
     }
   });
   // Soft edges, but narrower than the smallest face so it fully gets its own pass.
-  const sigma = Math.max(2.0, 0.25 * Math.min(...widths) * scale);
+  const sigma = Math.max(2.0, soft * Math.min(...widths) * scale);
   const maps = groups.map((_, g) => {
     const m = new cv.Mat(rows, cols, cv.CV_32F), blurred = new cv.Mat();
     const v = m.data32F;
@@ -180,9 +185,49 @@ export function scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols) {
   return groups.map((_, g) => ({ width: meanWidth[g], weight: maps[g] }));
 }
 
+// The nose, from the detector's eyes and nose tip, in distances between the eyes (across)
+// and shares of the way from between the eyes to the nose's foot (along). As smoother.py.
+const NOSE = {
+  below: 0.25,          // the foot is this share of eyes-to-tip further on than the tip
+  top: 0.18,            // half-width between the eyes,
+  foot: 0.33,           // and at the foot, wings included
+  edge: 0.06,           // the sides fade over this much either way
+  start: [-0.15, 0.05], // fades in from above the eye line,
+  end: [0.95, 1.15],    // and out again past the foot
+};
+
+// How much each working pixel is nose, 0..1 (Float32Array), or null where no face shows
+// one. A row without points (all zero) has no nose.
+function noseMap(faces, scale, x0, y0, rows, cols) {
+  const t = NOSE;
+  let out = null, most = 0;
+  for (const f of faces || []) {
+    const midX = (f[4] + f[6]) / 2, midY = (f[5] + f[7]) / 2;
+    const ex = (f[6] - f[4]) * scale, ey = (f[7] - f[5]) * scale;
+    const ax = (f[8] - midX) * (1 + t.below) * scale, ay = (f[9] - midY) * (1 + t.below) * scale;
+    const eyeD2 = ex * ex + ey * ey, length2 = ax * ax + ay * ay;
+    if (!(eyeD2 > 1e-6 && length2 > 1e-6)) continue;
+    if (!out) out = new Float32Array(rows * cols);
+    const cx = (midX - x0) * scale, cy = (midY - y0) * scale;
+    for (let y = 0, p = 0; y < rows; y++) {
+      const dy = y - cy;
+      for (let x = 0; x < cols; x++, p++) {
+        const dx = x - cx;
+        const a = (dx * ax + dy * ay) / length2, c = Math.abs(dx * ex + dy * ey) / eyeD2;
+        const half = t.top + (t.foot - t.top) * Math.min(1, Math.max(0, a));
+        const w = (1 - smoothstep(c - half, -t.edge, t.edge)) * smoothstep(a, t.start[0], t.start[1]) * (1 - smoothstep(a, t.end[0], t.end[1]));
+        if (w > out[p]) out[p] = w;
+        if (w > most) most = w;
+      }
+    }
+  }
+  return most > 1e-3 ? out : null;
+}
+
 // What to add to each pixel's tone layer, on a reduced copy of the region:
 // a CV_32FC3 Mat (B, G, R), working rows by full width. Caller deletes it.
-// light widens the brightness radius for hard light (LIGHTING).
+// light widens the brightness radius for hard light (LIGHTING), except on the nose: at
+// that size a nose's light and shade are its shape, and evening them flattens it.
 function toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, strength, light = 1) {
   const rh = roi.rows, rw = roi.cols;
   let reduced = roi, maskW = maskMat;
@@ -270,10 +315,18 @@ function toneChange(cv, roi, maskMat, faces, widths, x0, y0, sigma, scale, stren
     d.delete(); num.delete();
   };
 
+  const nose = light > 1 ? noseMap(faces, scale, x0, y0, rows, cols) : null;
   for (const { width, weight } of scaleRegions(cv, faces, widths, scale, x0, y0, rows, cols)) {
     const rY = Math.max(1, pyRound(width * scale * TUNE.luma_radius * light));
     const rC = Math.max(2, pyRound(width * scale * TUNE.chroma_radius));
-    addChange(dY, Y, rY, epsY, weight);
+    const rNose = Math.max(1, pyRound(width * scale * TUNE.luma_radius));
+    if (!nose || rNose === rY) addChange(dY, Y, rY, epsY, weight);
+    else {
+      const off = new Float32Array(n), on = new Float32Array(n);
+      for (let i = 0; i < n; i++) { const w = weight ? weight[i] : 1; on[i] = w * nose[i]; off[i] = w - on[i]; }
+      addChange(dY, Y, rY, epsY, off);
+      addChange(dY, Y, rNose, epsY, on);
+    }
     addChange(dCr, Cr, rC, epsC, weight);
     addChange(dCb, Cb, rC, epsC, weight);
   }

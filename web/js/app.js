@@ -16,7 +16,8 @@ const brush = attachMaskBrush({
   image: $('after'),
   button: $('editmask'),
   onChange: () => requestRender(),
-  onModeChange: (editing) => { if (editing) requestRender(); },
+  // Straightening is left off while the brush is in use, so it has to come back afterwards.
+  onModeChange: (editing) => { if (editing || +$('level').value > 0) requestRender(); },
   toolsHost: $('brushbox'),
   labels: [t('brush.use'), t('brush.done')],
 });
@@ -69,6 +70,9 @@ const params = () => ({
   shine: +$('shine').value / 100,
   eyes: +$('eyes').value / 100,
   tone: +$('tone').value / 100,
+  strays: +$('strays').value / 100,
+  lip: +$('lip').value / 100,
+  level: +$('level').value / 100,
   pores: +$('pores').value / 100,
   print: $('print').value,
   lighting: $('lighting').value,
@@ -78,7 +82,7 @@ const params = () => ({
 });
 
 function setControls(enabled) {
-  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
+  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'strays', 'level', 'lip', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
 let summary = () => '', opened = null;
@@ -193,7 +197,7 @@ $('drop').addEventListener('dragleave', () => $('drop').classList.remove('over')
 $('drop').addEventListener('drop', (e) => { e.preventDefault(); $('drop').classList.remove('over'); openFile(e.dataTransfer.files[0]); });
 $('file').addEventListener('change', (e) => openFile(e.target.files[0]));
 
-for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['shine', 'rval'], ['eyes', 'yval'], ['tone', 'nval'], ['pores', 'pval']]) {
+for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture', 'tval'], ['shine', 'rval'], ['eyes', 'yval'], ['tone', 'nval'], ['pores', 'pval'], ['strays', 'hval'], ['level', 'lval'], ['lip', 'mval']]) {
   $(id).addEventListener('input', () => { $(label).textContent = $(id).value; scheduleRender(); });
 }
 

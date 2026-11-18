@@ -27,6 +27,7 @@ import numpy as np
 import smoother
 import blemish
 import heal
+import lip
 import look
 import mask_edit
 import photo_io
@@ -47,7 +48,8 @@ _analysis_lock = threading.Lock()
 def _analysed(image_url: str, face_only: bool, preview: bool = False):
     """(img, info, faces, mask, corr, spot count, extra) for an uploaded photo; extra is
     what look.py's steps go by: {"area": all the skin, "points": each face's landmarks,
-    "luma": the faces' brightness}. With preview, the photo scaled down to PREVIEW_MAX
+    "luma": the faces' brightness, "bright": each face's brighter skin's colour, "person":
+    the person's outline (look.person_of)}. With preview, the photo scaled down to PREVIEW_MAX
     with its analysis to match (scaled_analysis): the faces, skin and spots are still
     found on the full-size photo, as the web app does, so the preview shows what the
     download will."""
@@ -59,9 +61,10 @@ def _analysed(image_url: str, face_only: bool, preview: bool = False):
             if img is None:
                 raise ValueError("could not decode image")
             faces = smoother._detect_faces(img)
-            mask, area, points = smoother.skin_layers(img, faces=faces, face_only=face_only)
+            mask, area, points, seg = smoother.skin_layers(img, faces=faces, face_only=face_only, with_seg=True)
             corr, count = blemish.correction(img, faces, mask) if blemish.have_model() else (None, 0)
-            extra = {"area": area, "points": points, "luma": look.skin_luma(img, mask, faces)}
+            extra = {"area": area, "points": points, "luma": look.skin_luma(img, mask, faces),
+                     "bright": look.bright_colours(img, mask, faces), "person": look.person_of(seg)}
             _analysis_cache[key] = (img, info, faces, mask, corr, count, extra)
         if not preview:
             return _analysis_cache[key]
@@ -95,8 +98,19 @@ def scaled_analysis(analysed, longest: int):
         x0, y0 = min(pw - 1, round(x0 * s)), min(ph - 1, round(y0 * s))
         corr = x0, y0, fills[:ph - y0, :pw - x0]
     extra = {"area": cv2.resize(extra["area"], (pw, ph), interpolation=cv2.INTER_AREA),
-             "points": [None if p is None else p * s for p in extra["points"]], "luma": extra["luma"]}
+             "points": [None if p is None else p * s for p in extra["points"]], "luma": extra["luma"],
+             "bright": extra.get("bright"), "person": _scaled_person(extra.get("person"), s, pw, ph)}
     return small, info, faces, mask, corr, count, extra
+
+
+def _scaled_person(person, s: float, pw: int, ph: int):
+    """look.person_of's region for a photo scaled by s to pw x ph: the same scores, over
+    the region's place in the smaller photo."""
+    if person is None:
+        return None
+    x0, y0, x1, y1, scores = person
+    x0, y0 = min(pw - 1, round(x0 * s)), min(ph - 1, round(y0 * s))
+    return x0, y0, max(x0 + 1, min(pw, round(x1 * s))), max(y0 + 1, min(ph, round(y1 * s))), scores
 
 
 def _picture(data: bytes, mime: str) -> str:
@@ -251,7 +265,7 @@ PAGE ="""<!doctype html>
     <h2 data-i18n="panel.skinPhoto">Skin and photo</h2>
     <div class="ctl">
       <label for="lighting" data-i18n="ctl.lighting">Lighting</label>
-      <select id="lighting" data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
+      <select id="lighting" data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge, and the nose is evened only as on soft light, so it keeps its shape. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
         <option value="soft" selected data-i18n="ctl.lightingSoft">Soft (studio)</option>
         <option value="hard" data-i18n="ctl.lightingHard">Hard or patchy (flash)</option>
       </select>
@@ -281,7 +295,7 @@ PAGE ="""<!doctype html>
       <input id="texture" type="range" min="0" max="100" value="60">
     </div>
     <div class="ctl">
-      <label data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
+      <label data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin, and brings large shiny patches on the forehead, nose and cheeks back towards the skin's own colour. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
       <input id="shine" type="range" min="0" max="100" value="0">
     </div>
     <div class="ctl">
@@ -300,6 +314,18 @@ PAGE ="""<!doctype html>
   </section>
   <section data-step="3">
     <h2 data-i18n="panel.finishing">Finishing</h2>
+    <div class="ctl">
+      <label data-i18n-title="ctl.levelTitle" title="Turns a tilted head upright, by the share of its tilt set here. The head turns as one piece and the turn fades out down the neck, so the shoulders stay where they are. It is left off while the brush is in use."><span data-i18n="ctl.level">Straighten head</span> <span id="lval">0</span></label>
+      <input id="level" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="ctl">
+      <label data-i18n-title="ctl.straysTitle" title="Removes stray hairs sticking out around the head, against a plain backdrop. A busy background is left alone, and the hair's own outline isn't redrawn."><span data-i18n="ctl.strays">Tidy stray hairs</span> <span id="hval">0</span></label>
+      <input id="strays" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="ctl">
+      <label data-i18n-title="ctl.lipTitle" title="Takes a thin moustache, or its shadow, off the upper lip: the skin there is replaced, with the cheeks' own grain, not just lightened. For a portrait taken straight on with the mouth closed, as for an ID photo: a smiling or turned face is left alone, and so are a bare lip and a full moustache. A beard stays, so leave this off for a face with one. A mole right above the lip goes with the hair: bring it back with the brush's Restore."><span data-i18n="ctl.lip">Thin moustache</span> <span id="mval">0</span></label>
+      <input id="lip" type="range" min="0" max="100" value="0">
+    </div>
     <p class="note" data-i18n="note.step3">Bring back sharpness around the eyes, nostrils and jawline with Undo smoothing, cover scars with Heal, and click leftover spots away with Remove spot. Then press Download.</p>
   </section>
   <section id="brushbox">
@@ -331,7 +357,8 @@ const brush = attachMaskBrush({
   image: $('after'),
   button: $('editmask'),
   onChange: () => runProcess(),
-  onModeChange: (editing) => { if (editing) runProcess(); },
+  // Straightening is left off while the brush is in use, so it has to come back afterwards.
+  onModeChange: (editing) => { if (editing || +$('level').value > 0) runProcess(); },
   toolsHost: $('brushbox'),
   labels: [t('brush.use'), t('brush.done')],
 });
@@ -439,8 +466,8 @@ $('reset').addEventListener('click', () => {
   $('file').value = '';
 });
 
-const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', eyes: 'yval', tone: 'nval', pores: 'pval', blemish: 'bval'};
-['strength','texture','shine','eyes','tone','pores','blemish'].forEach(id => {
+const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', eyes: 'yval', tone: 'nval', pores: 'pval', blemish: 'bval', strays: 'hval', level: 'lval', lip: 'mval'};
+['strength','texture','shine','eyes','tone','pores','blemish','strays','level','lip'].forEach(id => {
   $(id).addEventListener('input', () => {
     $(valueLabel[id]).textContent = $(id).value;
     process();
@@ -499,6 +526,9 @@ async function runProcess(full = false){
         shine: +$('shine').value / 100,
         eyes: +$('eyes').value / 100,
         tone: +$('tone').value / 100,
+        strays: +$('strays').value / 100,
+        lip: +$('lip').value / 100,
+        level: +$('level').value / 100,
         pores: +$('pores').value / 100,
         print: $('print').value,
         lighting: $('lighting').value,
@@ -602,12 +632,17 @@ class Handler(BaseHTTPRequestHandler):
             blemish_amt = float(payload.get("blemish", 0.0))
             eyes = float(payload.get("eyes", 0.0))
             tone = float(payload.get("tone", 0.0))
+            strays = float(payload.get("strays", 0.0))
+            moustache = float(payload.get("lip", 0.0))
+            # Straightening moves the photo under the brush's strokes: off while the brush is in use.
+            level = 0.0 if payload.get("want_mask") else float(payload.get("level", 0.0))
             # The page asks for a preview while editing and the full size to download.
             preview = bool(payload.get("preview", False))
 
             full_h, full_w = _analysed(payload["image"], face_only)[0].shape[:2]
             img, info, faces, mask, corr, spots, extra = _analysed(payload["image"], face_only, preview)
             area = extra["area"]
+            restored = None                # the brush's Restore strokes, for the step outside the skin
             n_faces = 0 if faces is None else len(faces)
 
             # The brush's strokes change the mask, and take restored areas out of the fills.
@@ -618,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
                 mask = mask_edit.apply_to_mask(mask, region)
                 corr = mask_edit.apply_to_correction(corr, fills)
                 area = mask_edit.apply_to_mask(area, fills)     # like the fixes: Undo smoothing keeps it
+                restored = fills
 
             # Heal blemishes first, then the healing brush's strokes, then smooth (the
             # usual retouching order).
@@ -625,6 +661,9 @@ class Handler(BaseHTTPRequestHandler):
             if blemish_amt > 0 and blemish.have_model():
                 blemish_count = spots
                 healed = blemish.apply(img, corr, blemish_amt)
+            # A thin moustache, if asked for: before the healing brush, so its strokes go on top,
+            # and not where the brush's Restore says to leave the photo alone.
+            healed = lip.clear(healed, extra["points"], mask, moustache, restored)
             healed = heal.apply(healed, strokes)
             out = smoother.smooth_face(healed, strength=strength, texture=texture,
                                        mask=mask, faces=faces, pores=pores, grain=grain, shine=shine,
@@ -632,8 +671,10 @@ class Handler(BaseHTTPRequestHandler):
             # Smooth again: once more, with finer grain, where it was painted.
             if again is not None:
                 out = smoother.smooth_again(healed, out, again, mask, faces, texture, pores, grain, shine, light)
-            # Under-eyes and skin tone (off unless asked for), on the smoothed result.
-            out = look.finish(out, mask, area, extra["points"], extra["luma"], eyes, tone)
+            # Shiny patches (the other half of Reduce shine), under-eyes, skin tone, stray
+            # hairs and straightening, all off unless asked for, on the smoothed result.
+            out = look.finish(out, mask, area, extra["points"], extra["luma"], eyes, tone,
+                              shine, faces, extra.get("bright"), strays, extra.get("person"), restored, level)
             # The light brush paints tone on the smoothed result, keeping the grain it kept.
             out = heal.apply_light(out, strokes, smoother.detail_sigma(img.shape, faces, grain))
 

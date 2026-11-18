@@ -23,6 +23,7 @@ import smoother  # noqa: E402
 import blemish  # noqa: E402
 import blemish_classic  # noqa: E402
 import heal  # noqa: E402
+import lip  # noqa: E402
 import look  # noqa: E402
 import mask_edit  # noqa: E402
 import skin_segment  # noqa: E402
@@ -1624,6 +1625,264 @@ def test_skin_tone_moves_dark_skin_to_where_it_should_be_through_the_area_only()
     assert look.balance(img, area, look.BALANCE["centre"], 1.0) is img
 
 
+def glossy_patch_photo() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Even skin with grain, a whitish shiny patch on the left and a blush (redder, no
+    brighter) on the right: (photo, mask over the middle, faces)."""
+    rng = np.random.default_rng(9)
+    yy, xx = np.mgrid[0:600, 0:800].astype(np.float32)
+    grain = rng.normal(0, 3, (600, 800))
+    img = np.dstack([118 + grain, 138 + grain, 190 + grain])                 # B, G, R
+    shine = np.exp(-((xx - 250) ** 2 + (yy - 300) ** 2) / (2 * 45.0 ** 2))
+    img += shine[:, :, None] * np.array([95.0, 80.0, 50.0])                  # towards white
+    blush = np.exp(-((xx - 560) ** 2 + (yy - 300) ** 2) / (2 * 45.0 ** 2))
+    img += blush[:, :, None] * np.array([-18.0, -22.0, 30.0])                # redder, not brighter
+    mask = np.zeros((600, 800), np.float32)
+    mask[40:560, 60:740] = 1.0
+    return np.clip(img, 0, 255).astype(np.uint8), mask, rows(face_row(100, 60, 600, 480))
+
+
+def test_the_brighter_skins_colour_is_read_between_two_levels_of_brightness():
+    img = np.zeros((100, 1000, 3), np.uint8)
+    for i in range(1000):                              # a ramp: each column a little brighter
+        img[:, i] = (i // 5, i // 5 + 20, i // 4)
+    mask = np.ones((100, 1000), np.float32)
+    b, g, r = look.bright_colour(img, mask, None)
+    lo, hi = look.MATTE["from"], look.MATTE["to"]
+    ordered = np.sort(img.reshape(-1, 3).astype(np.int32) @ np.array([114, 587, 299]))
+    levels = img[0].astype(np.int32) @ np.array([114, 587, 299])
+    band = img[0][(levels >= ordered[int(lo * 99999)]) & (levels <= ordered[int(hi * 99999)])]
+    assert np.allclose([b, g, r], band.mean(axis=0) / 255.0, atol=1e-9)
+    assert img[0, 690, 2] / 255 < r < img[0, 810, 2] / 255, "from the brighter skin, short of the brightest"
+    assert look.bright_colour(img, np.zeros((100, 1000), np.float32), None) is None
+    faces = rows(face_row(0, 0, 100, 100))
+    assert look.bright_colour(img, mask, faces)[2] < 0.1, "only the faces' skin counts"
+
+
+def test_reduce_shine_patches_are_off_by_default_and_need_the_colour():
+    img, mask, faces = glossy_patch_photo()
+    colour = look.bright_colour(img, mask, faces)
+    assert look.matte(img, mask, faces, colour, 0.0) is img
+    assert look.matte(img, mask, faces, None, 1.0) is img
+    assert look.matte(img, np.zeros_like(mask), faces, colour, 1.0) is img
+    assert look.finish(img, mask, mask, [], 0.5, faces=faces, bright=colour) is img, "every step off: the photo itself"
+
+
+def test_reduce_shine_takes_a_large_patch_down_towards_the_skins_colour():
+    img, mask, faces = glossy_patch_photo()
+    colour = look.bright_colour(img, mask, faces)
+    out = look.matte(img, mask, faces, colour, 1.0)
+    half = look.matte(img, mask, faces, colour, 0.5)
+    patch = lambda a: a[285:315, 235:265].astype(np.float32).reshape(-1, 3).mean(axis=0)
+    ref = np.array(colour) * 255
+    before, after, mid = patch(img) - ref, patch(out) - ref, patch(half) - ref
+    assert (before > 30).all(), before
+    cut = look.MATTE["cut"]
+    assert np.allclose(after / before, 1 - cut, atol=0.06), ("the share above the colour that is left", after / before)
+    assert np.allclose(mid / before, 1 - cut / 2, atol=0.06), "half the amount, half as much"
+    ratio = lambda c: c[0] / c[2]
+    assert abs(ratio(patch(out)) - ratio(ref)) < abs(ratio(patch(img)) - ratio(ref)), "its colour comes back, not grey"
+    green = lambda a: a[:, :, 1].astype(np.float32)
+    fine = lambda a: (green(a) - cv2.GaussianBlur(green(a), (0, 0), 2))[280:320, 230:270].std()
+    assert 0.95 < fine(out) / fine(img) < 1.05, "the grain stays"
+
+
+def test_reduce_shine_leaves_even_skin_a_blush_and_everything_outside_the_mask():
+    img, mask, faces = glossy_patch_photo()
+    out = look.matte(img, mask, faces, look.bright_colour(img, mask, faces), 1.0)
+    change = np.abs(out.astype(int) - img)
+    assert change[420:540, 100:700].max() <= 1, "even skin, no brighter than the colour"
+    assert change[270:330, 530:590].mean() < 0.6, ("a blush is redder, not brighter", change[270:330, 530:590].mean())
+    assert np.array_equal(out[:40], img[:40]) and np.array_equal(out[:, :60], img[:, :60]), "outside the mask"
+    part = mask.copy()
+    part[:, :250] = 0                                   # a Restore stroke over half the patch
+    out = look.matte(img, part, faces, look.bright_colour(img, mask, faces), 1.0)
+    assert np.array_equal(out[:, :250], img[:, :250]) and not np.array_equal(out[:, 250:320], img[:, 250:320])
+
+
+def test_reduce_shine_judges_each_face_against_its_own_skin():
+    """A fair face beside a larger dark one: with one colour for both, the fair face
+    would sit above it everywhere and be darkened as if it were shine."""
+    rng = np.random.default_rng(11)
+    grain = rng.normal(0, 2, (500, 1000))
+    img = np.zeros((500, 1000, 3), np.float32)
+    img[:, :700] = (70, 90, 130)                       # a dark face, most of the photo
+    img[:, 700:] = (150, 175, 225)                     # a fair one on the right
+    yy, xx = np.mgrid[0:500, 0:1000].astype(np.float32)
+    for cx in (350, 850):                              # the same shiny patch on each
+        img += np.exp(-((xx - cx) ** 2 + (yy - 190) ** 2) / (2 * 40.0 ** 2))[:, :, None] * np.array([28.0, 26.0, 22.0])
+    img = np.clip(img + grain[:, :, None], 0, 255).astype(np.uint8)
+    mask = np.ones((500, 1000), np.float32)
+    faces = rows(face_row(50, 0, 600, 500), face_row(720, 120, 260, 260))
+    colours = look.bright_colours(img, mask, faces)
+    assert len(colours) == 2 and colours[0][2] < 0.6 < colours[1][2], "one colour per face"
+    assert look.bright_colours(img, mask, None)[0] is not None and len(look.bright_colours(img, mask, None)) == 1
+    out = look.matte(img, mask, faces, colours, 1.0)
+    change = out.astype(np.float32) - img
+    even = lambda c: (float(np.abs(c[330:370, 100:600]).mean()), float(np.abs(c[330:370, 760:940]).mean()))
+    assert max(even(change)) < 0.3, ("each face's even skin is left alone", even(change))
+    dark, fair = float(change[180:200, 340:360].mean()), float(change[180:200, 840:860].mean())
+    assert dark < -5 and fair < -5 and abs(dark - fair) < 3, ("the same patch comes down the same on both", dark, fair)
+    pooled = look.matte(img, mask, faces, look.bright_colour(img, mask, faces), 1.0).astype(np.float32) - img
+    assert float(pooled[330:370, 760:940].mean()) < -10, "one colour for both would darken the fair face"
+    assert look.matte(img, mask, faces, [None, None], 1.0) is img
+
+
+def stray_photo(busy: bool = False):
+    """A dark head on a blue backdrop with a soft gradient, three thin stray hairs
+    sticking out of it and a thick lock beside it: (photo, person region, faces)."""
+    rng = np.random.default_rng(3)
+    yy, xx = np.mgrid[0:700, 0:700].astype(np.float32)
+    img = np.dstack([200 + 0.03 * yy, 110 + 0.02 * xx, 30 + 0 * xx]) + rng.normal(0, 1.2, (700, 700, 1))
+    if busy:
+        img += rng.normal(0, 22, (700, 700, 3))
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    head = ((xx - 350) / 150) ** 2 + ((yy - 380) / 200) ** 2 <= 1
+    img[head] = (40, 45, 60)
+    cv2.line(img, (350, 185), (340, 148), (35, 40, 50), 2, cv2.LINE_AA)       # strays: upwards,
+    cv2.line(img, (480, 300), (522, 278), (35, 40, 50), 1, cv2.LINE_AA)       # to the right,
+    cv2.line(img, (215, 330), (172, 318), (35, 40, 50), 2, cv2.LINE_AA)       # to the left
+    cv2.circle(img, (212, 250), 14, (35, 40, 50), -1)                         # too thick to be a stray hair
+    person = (0, 0, 700, 700, cv2.resize(head.astype(np.float32), (350, 350), interpolation=cv2.INTER_AREA))
+    return img, person, rows(face_row(250, 280, 200, 250))
+
+
+def test_tidy_stray_hairs_is_off_by_default_and_needs_the_outline_and_a_face():
+    img, person, faces = stray_photo()
+    assert look.tidy(img, person, faces, 0.0) is img
+    assert look.tidy(img, None, faces, 1.0) is img, "no segmentation, nothing to go by"
+    assert look.tidy(img, person, None, 1.0) is img
+    mask = np.ones((700, 700), np.float32)
+    assert look.finish(img, mask, mask, [], 0.5, faces=faces, person=person) is img, "every step off: the photo itself"
+    assert look.person_of(None) is None
+
+
+def test_tidy_stray_hairs_replaces_thin_strands_with_the_backdrop():
+    img, person, faces = stray_photo()
+    out = look.tidy(img, person, faces, 1.0)
+    clean = stray_photo()[0].copy()
+    yy, xx = np.mgrid[0:700, 0:700].astype(np.float32)
+    backdrop = np.dstack([200 + 0.03 * yy, 110 + 0.02 * xx, 30 + 0 * xx])
+    off = lambda a: np.abs(a.astype(np.float32) - backdrop).max(axis=2)
+    for name, (ys, xs) in {"up": (slice(150, 172), slice(335, 352)), "right": (slice(276, 296), slice(494, 520)),
+                           "left": (slice(314, 328), slice(176, 200))}.items():
+        assert off(img)[ys, xs].max() > 60, name
+        assert off(out)[ys, xs].max() < 12, (name, "the strand is gone", off(out)[ys, xs].max())
+    assert off(out)[244:256, 206:218].min() > 60, "a thick lock is not a stray hair"
+    head = ((xx - 350) / 150) ** 2 + ((yy - 380) / 200) ** 2 <= 1
+    assert np.array_equal(out[head], img[head]), "the person is left alone"
+    changed = np.abs(out.astype(int) - img).max(axis=2) > 2
+    assert changed.mean() < 0.01, "only the strands change"
+    assert not changed[620:].any() and not changed[:, :100].any(), "nothing far from the head or below it"
+    half = look.tidy(img, person, faces, 0.5)
+    assert 25 < off(half)[150:172, 335:352].max() < off(img)[150:172, 335:352].max() - 25, "half the amount, half gone"
+
+
+def test_tidy_stray_hairs_leaves_a_busy_background_and_restored_areas():
+    img, person, faces = stray_photo(busy=True)
+    assert look.tidy(img, person, faces, 1.0) is img, "no plain backdrop to tidy against"
+    img, person, faces = stray_photo()
+    strokes = [{"id": 1, "mode": "protect", "size": 0.2, "soft": 0.1, "points": [0.49, 0.22, 0.5, 0.23]}]
+    region, fills, _ = mask_edit.edits(strokes, 700, 700)
+    out = look.tidy(img, person, faces, 1.0, fills)
+    assert np.array_equal(out[152:170, 338:350], img[152:170, 338:350]), "Restore keeps the strand under it"
+    assert not np.array_equal(out[276:296, 494:520], img[276:296, 494:520]), "the others still go"
+
+
+def test_tidy_stray_hairs_leaves_thin_things_that_are_not_the_hairs_colour():
+    """A white seam and a red wire beside the head are thin too, but they aren't the
+    backdrop with dark hair mixed in."""
+    img, person, faces = stray_photo()
+    cv2.line(img, (520, 330), (545, 420), (245, 245, 245), 2, cv2.LINE_AA)       # a white line on the backdrop
+    cv2.line(img, (170, 380), (200, 470), (40, 40, 230), 2, cv2.LINE_AA)         # a red one
+    out = look.tidy(img, person, faces, 1.0)
+    assert np.array_equal(out[335:415, 518:548], img[335:415, 518:548]), "the white line stays"
+    assert np.array_equal(out[385:465, 168:202], img[385:465, 168:202]), "and the red one"
+    assert not np.array_equal(out[150:172, 335:352], img[150:172, 335:352]), "the stray hairs still go"
+    bald = (person[0], person[1], person[2], person[3], np.zeros_like(person[4]))
+    assert look.tidy(img, bald, faces, 1.0) is img, "no hair to take the colour from, nothing done"
+
+
+def test_tidy_stray_hairs_does_the_same_on_a_large_photo():
+    img, person, faces = stray_photo()
+    big = cv2.resize(img, (2800, 2800), interpolation=cv2.INTER_CUBIC)
+    big_faces = faces.copy()
+    big_faces[:, :14] *= 4
+    out = look.tidy(big, (0, 0, 2800, 2800, person[4]), big_faces, 1.0)
+    small = cv2.resize(out, (700, 700), interpolation=cv2.INTER_AREA).astype(np.float32)
+    yy, xx = np.mgrid[0:700, 0:700].astype(np.float32)
+    backdrop = np.dstack([200 + 0.03 * yy, 110 + 0.02 * xx, 30 + 0 * xx])
+    assert np.abs(small - backdrop).max(axis=2)[150:172, 335:352].max() < 14, "found on a reduced copy, removed at full size"
+
+
+def tilted_head(degrees: float = 5.0):
+    """eye_points() turned by some degrees about the chin, and a photo with a white dot on
+    each eye, one on the forehead and one on the collar: (photo, points, dot places)."""
+    pts = eye_points()
+    chin = pts[face_landmarks.CHIN].copy()
+    t = np.radians(degrees)
+    turn = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+    pts = (pts - chin) @ turn.T + chin
+    rng = np.random.default_rng(2)
+    img = np.clip(np.full((1000, 800, 3), (150, 120, 90), np.float32) + rng.normal(0, 2, (1000, 800, 1)), 0, 255).astype(np.uint8)
+    eye_r, eye_l = pts[[33, 133]].mean(axis=0), pts[[263, 362]].mean(axis=0)
+    forehead = (eye_r + eye_l) / 2 + (chin - (eye_r + eye_l) / 2) * -0.5
+    collar = chin + np.array([10.0, 260.0])
+    dots = {"eye_r": eye_r, "eye_l": eye_l, "forehead": forehead, "collar": collar}
+    for x, y in dots.values():
+        cv2.circle(img, (int(round(x)), int(round(y))), 6, (255, 255, 255), -1, cv2.LINE_AA)
+    return img, pts, dots
+
+
+def dot_near(img: np.ndarray, place, reach: int = 60) -> np.ndarray:
+    """Where the white dot nearest a place is: the centre of the bright pixels around it."""
+    x, y = int(round(place[0])), int(round(place[1]))
+    box = img[y - reach:y + reach, x - reach:x + reach, 0].astype(np.float32)
+    ys, xs = np.nonzero(box > 220)
+    return np.array([xs.mean() + x - reach, ys.mean() + y - reach])
+
+
+def test_straighten_head_is_off_by_default_and_needs_landmarks():
+    img, pts, _ = tilted_head()
+    assert look.straighten(img, [pts], 0.0) is img
+    assert look.straighten(img, [None], 1.0) is img and look.straighten(img, [], 1.0) is img
+    mask = np.ones(img.shape[:2], np.float32)
+    assert look.finish(img, mask, mask, [pts], 0.5) is img, "every step off: the photo itself"
+    assert abs(look.head_tilt(pts) - 5.0) < 1e-6 and abs(look.head_tilt(eye_points())) < 1e-9
+    level, _, _ = tilted_head(0.0)
+    assert look.straighten(level, [eye_points()], 1.0) is level, "a level head isn't touched"
+
+
+def test_straighten_head_levels_the_eyes_and_leaves_the_shoulders():
+    img, pts, dots = tilted_head(5.0)
+    out = look.straighten(img, [pts], 1.0)
+    r, l = dot_near(out, dots["eye_r"]), dot_near(out, dots["eye_l"])
+    assert abs(l[1] - r[1]) < 1.0, ("the eye line is level", r, l)
+    assert abs(np.hypot(*(l - r)) - 200) < 1.5, "and the eyes are as far apart as they were: turned, not stretched"
+    half = look.straighten(img, [pts], 0.5)
+    r2, l2 = dot_near(half, dots["eye_r"]), dot_near(half, dots["eye_l"])
+    tilt = np.degrees(np.arctan2(l2[1] - r2[1], l2[0] - r2[0]))
+    assert abs(tilt - 2.5) < 0.3, ("half the amount, half the tilt left", tilt)
+    f0, f1 = dot_near(img, dots["forehead"]), dot_near(out, dots["forehead"])
+    assert f1[0] < f0[0] - 10, "the top of the head moves most"
+    assert np.array_equal(out[960:], img[960:]), "nothing below the neck (its line tilts with the face)"
+    assert np.allclose(dot_near(out, dots["collar"]), dot_near(img, dots["collar"]), atol=0.01), "the collar stays"
+    back = look.straighten(*tilted_head(-5.0)[:1], [tilted_head(-5.0)[1]], 1.0)
+    rb, lb = dot_near(back, tilted_head(-5.0)[2]["eye_r"]), dot_near(back, tilted_head(-5.0)[2]["eye_l"])
+    assert abs(lb[1] - rb[1]) < 1.0, "a tilt the other way is undone the other way"
+
+
+def test_straighten_head_only_undoes_a_slip_and_is_safe_at_the_photo_edge():
+    img, pts, dots = tilted_head(20.0)
+    out = look.straighten(img, [pts], 1.0)
+    r, l = dot_near(out, dots["eye_r"], 80), dot_near(out, dots["eye_l"], 80)
+    left = np.degrees(np.arctan2(l[1] - r[1], l[0] - r[0]))
+    assert abs(left - (20.0 - look.LEVEL["most"])) < 0.5, ("a pose is only turned by the most allowed", left)
+    off = look.straighten(img, [pts + (0, -2000)], 1.0)
+    assert off.shape == img.shape
+    edge = look.straighten(img, [pts + (350, 0)], 1.0)
+    assert edge.shape == img.shape and np.array_equal(edge[950:], img[950:])
+
+
 def test_the_pages_and_the_window_have_the_same_looks():
     import re
     source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "js", "looks.js"),
@@ -1803,6 +2062,186 @@ def test_the_desktop_page_previews_while_editing_and_downloads_full_size():
         server.shutdown()
         server.server_close()
         serve._analysis_cache.clear()
+
+
+def test_the_nose_is_found_from_the_detectors_points():
+    face = np.array([face_row(300, 200, 400, 500)], np.float32)     # eyes at y 400, nose tip at (500, 500)
+    nose = smoother._nose_map(face, 1.0, 0, 0, (900, 1000))
+    assert nose[420:510, 485:516].min() > 0.99, "the ridge and the tip"
+    assert nose[500, 465] > 0.99 and nose[500, 535] > 0.99 and nose[420, 465] < 0.5, "the wings, wider than the ridge"
+    assert nose[400, 450] < 0.1 and nose[400, 550] < 0.1, "not the inner corners of the eyes"
+    assert max(nose[520, 380], nose[520, 620], nose[300, 500], nose[590, 500]) < 0.01, "not the cheeks, forehead or lips"
+    half = smoother._nose_map(face, 0.5, 100, 60, (420, 450))
+    assert abs(float(half[(500 - 60) // 2, (500 - 100) // 2]) - 1.0) < 1e-3 and half[(520 - 60) // 2, (380 - 100) // 2] < 0.01, \
+        "the same place on a reduced copy of a region"
+    assert smoother._nose_map(FACE, 1.0, 0, 0, (900, 1000)) is None, "a row without points has no nose"
+
+
+def test_hard_lighting_leaves_the_nose_at_soft_lighting():
+    img = mottled_light_photo()
+    mask = oval_mask()
+    face = np.array([face_row(300, 200, 400, 500)], np.float32)
+    hard = smoother.LIGHTING["hard"]
+    soft = smoother.smooth_face(img, 1.0, 0.6, mask, face).astype(np.int16)
+    out = smoother.smooth_face(img, 1.0, 0.6, mask, face, light=hard).astype(np.int16)
+    nose_map = smoother._nose_map
+    smoother._nose_map = lambda *a: None
+    try:
+        everywhere = smoother.smooth_face(img, 1.0, 0.6, mask, face, light=hard).astype(np.int16)
+        assert np.array_equal(smoother.smooth_face(img, 1.0, 0.6, mask, face), soft), "soft light never asks where the nose is"
+    finally:
+        smoother._nose_map = nose_map
+    nose = (slice(430, 505), slice(488, 513))
+    cheek = (slice(480, 600), slice(340, 420))
+    assert np.abs(everywhere[nose] - soft[nose]).mean() > 1.0, "the photo should be one hard light evens further"
+    assert np.abs(out[nose] - soft[nose]).max() <= 1, "on the nose, as soft light"
+    assert np.array_equal(out[cheek], everywhere[cheek]), "beside it, as hard light"
+    assert np.array_equal(smoother.smooth_face(img, 1.0, 0.6, mask, FACE, light=hard),
+                          smoother.smooth_face(img, 1.0, 0.6, mask, FACE, light=hard)), "the same every time"
+
+
+def lip_face(moustache: float = 0.25, size: float = 1.0, seed: int = 3):
+    """A drawn face around the mouth, 1000 x 900 at size 1: (photo, landmarks, smoothing mask, the
+    moustache's own map 0..1). The skin between lip and nose is shaded as a bare lip is
+    (lip.TABLE); moustache darkens a band above the lip by that share, with strands in it."""
+    h, w = round(900 * size), round(1000 * size)
+    pts = np.zeros((face_landmarks.POINTS, 2), np.float64)
+    place = {33: (380, 350), 133: (440, 350), 362: (560, 350), 263: (620, 350), 2: (500, 540), 205: (390, 500), 425: (610, 500),
+             61: (430, 620), 185: (445, 612), 40: (462, 606), 39: (478, 602), 37: (490, 599), 0: (500, 600), 267: (510, 599),
+             269: (522, 602), 270: (538, 606), 409: (555, 612), 291: (570, 620), 375: (555, 632), 321: (538, 640),
+             405: (522, 646), 314: (510, 649), 17: (500, 650), 84: (490, 649), 181: (478, 646), 91: (462, 640), 146: (445, 632),
+             13: (500, 623), 14: (500, 625)}
+    for i, xy in place.items():
+        pts[i] = np.array(xy, np.float64) * size
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    frame = lip._Frame(pts)
+    u, v = frame.uv(xx, yy)
+    near = smoother._smoothstep(2.6 - np.abs(u), 0.0, 0.4) * smoother._smoothstep(v + 0.9, 0.0, 0.3) * smoother._smoothstep(1.3 - v, 0.0, 0.3)
+    bare = 1.0 + near * (lip._table_at(u, v) / 0.97 - 1.0)
+    band = smoother._smoothstep(1.2 - np.abs(u), 0.0, 0.15) * smoother._smoothstep(v, 0.0, 0.05) * smoother._smoothstep(0.42 - v, 0.0, 0.08)
+    strands = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), max(0.6, 0.8 * size))
+    hair = band * (1.0 + 0.5 * strands / float(strands.std()))
+    tone = (0.72 + 0.06 * np.sin(xx / (170 * size))) * bare * (1.0 - moustache * np.clip(hair, 0.0, 2.0)) \
+        + cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), max(0.5, 0.7 * size)) * 0.012
+    img = np.clip(np.dstack([tone * 0.62, tone * 0.76, tone]) * 255.0, 0, 255).astype(np.uint8)
+    lips = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(lips, [np.round(pts[list(lip.UPPER + lip.LOWER)]).astype(np.int32)], 255)
+    img[lips > 0] = (90, 80, 190)
+    mask = 1.0 - cv2.GaussianBlur(lips.astype(np.float32) / 255.0, (0, 0), 1.0)
+    return img, pts, mask.astype(np.float32), band.astype(np.float32)
+
+
+def darkness(img, bare, where) -> float:
+    """How much darker img is than the same face with a bare lip, over the moustache's band, as a share."""
+    y = lambda a: cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 4.0)
+    return float(((y(bare) - y(img)) / y(bare))[where].mean())
+
+
+def test_no_moustache_step_without_an_amount_or_a_face():
+    img, pts, mask, band = lip_face()
+    assert lip.clear(img, [pts], mask, 0.0) is img
+    assert lip.clear(img, [], mask, 1.0) is img and lip.clear(img, [None], mask, 1.0) is img
+    tiny = pts * (lip.MIN_EYES * 0.9 / 180.0)
+    assert lip.clear(img, [tiny], mask, 1.0) is img, "a face too small to judge is left alone"
+
+
+def test_a_thin_moustache_is_replaced_not_faded():
+    img, pts, mask, band = lip_face()
+    bare = lip_face(0.0)[0]
+    where = band > 0.9
+    before = darkness(img, bare, where)
+    out = lip.clear(img, [pts], mask, 1.0)
+    after = darkness(out, bare, where)
+    assert before > 0.15, f"the drawn moustache should be dark: {before:.3f}"
+    assert abs(after) < 0.2 * before, f"left of the moustache: {after:.3f} of {before:.3f}"
+    grain = lambda a: (cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                       - cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 3.0))
+    cheek = np.zeros(band.shape, bool)
+    cheek[440:560, 340:440] = True
+    assert 0.5 * grain(img)[cheek].std() < grain(out)[where].std() < 2.0 * grain(img)[cheek].std() < grain(img)[where].std(), \
+        "the new skin has a cheek's grain, not the strands' and not none"
+    lips = np.zeros(band.shape, np.uint8)
+    cv2.fillPoly(lips, [np.round(pts[list(lip.UPPER + lip.LOWER)]).astype(np.int32)], 255)
+    inner = cv2.erode(lips, np.ones((7, 7), np.uint8)) > 0
+    assert np.array_equal(out[inner], img[inner]), "the lips themselves are not skin"
+    far = np.ones(band.shape, bool)
+    far[430:760, 250:750] = False
+    assert np.array_equal(out[far], img[far]), "nothing changes away from the mouth"
+    blurred = lambda a: cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 4.0)
+    assert float((blurred(out) - blurred(img)).min()) > -2.0, "nothing is made darker"
+
+
+def test_a_bare_lip_and_a_full_moustache_are_left_alone():
+    bare, pts, mask, band = lip_face(0.0)
+    assert lip.clear(bare, [pts], mask, 1.0) is bare, "a bare lip has nothing to remove"
+    full = lip_face(0.6)[0]
+    assert lip.clear(full, [pts], mask, 1.0) is full, "a full moustache is kept whole"
+    forced = lip.clear(full, [pts], mask, 1.0, force=True)
+    assert forced is not full, "unless the question is skipped (the parity check)"
+
+
+def test_the_moustache_step_is_for_a_face_straight_on_with_its_mouth_closed():
+    img, pts, mask, band = lip_face()
+    assert lip.clear(img, [pts], mask, 1.0) is not img
+    turned = pts.copy()
+    turned[2, 0] += 0.1 * 180                       # the nose's base a tenth of the eyes' distance to one side
+    assert lip.clear(img, [turned], mask, 1.0) is img, "a turned head"
+    open_mouth = pts.copy()
+    open_mouth[14, 1] += 0.15 * 180
+    assert lip.clear(img, [open_mouth], mask, 1.0) is img, "an open mouth"
+    smiling = pts.copy()
+    for i, x in ((61, 405), (291, 595)):
+        smiling[i, 0] = x                           # the mouth's corners pulled wide
+    assert lip.clear(img, [smiling], mask, 1.0) is img, "a broad smile"
+    assert lip.clear(img, [turned], mask, 1.0, force=True) is not img, "the parity check skips the question"
+
+
+def test_the_moustache_amount_is_a_share():
+    img, pts, mask, band = lip_face()
+    bare = lip_face(0.0)[0]
+    where = band > 0.9
+    before = darkness(img, bare, where)
+    half = darkness(lip.clear(img, [pts], mask, 0.5), bare, where)
+    assert 0.35 * before < half < 0.65 * before, f"half the amount: {half:.3f} of {before:.3f}"
+    assert np.array_equal(lip.clear(img, [pts], mask, 3.0), lip.clear(img, [pts], mask, 1.0)), "no more than all of it"
+
+
+def test_restore_keeps_the_moustache_where_it_was_painted():
+    img, pts, mask, band = lip_face()
+    edit = -np.ones((300, 250), np.float32)
+    keep = (250, 480, edit)                         # the photo's left half of the mouth
+    out = lip.clear(img, [pts], mask, 1.0, keep)
+    assert np.array_equal(out[480:780, 250:500], img[480:780, 250:500]), "restored: as it was"
+    bare = lip_face(0.0)[0]
+    right = (band > 0.9) & (np.arange(band.shape[1])[None, :] > 520)
+    assert abs(darkness(out, bare, right)) < 0.2 * darkness(img, bare, right), "the other half still goes"
+
+
+def test_the_moustache_step_holds_at_other_sizes():
+    for size in (0.5, 2.0):                         # 90 px between the eyes (worked at its own size) and 360 (on the grid)
+        img, pts, mask, band = lip_face(size=size)
+        bare = lip_face(0.0, size)[0]
+        where = band > 0.9
+        before = darkness(img, bare, where)
+        after = darkness(lip.clear(img, [pts], mask, 1.0), bare, where)
+        assert abs(after) < 0.25 * before, f"at {size}x, left of the moustache: {after:.3f} of {before:.3f}"
+        assert lip.clear(bare, [pts], mask, 1.0) is bare, f"at {size}x a bare lip is still bare"
+
+
+def test_moustache_helpers():
+    rng = np.random.default_rng(0)
+    values = rng.normal(0, 1, 1001)
+    for q in (10.0, 25.0, 90.0):
+        assert abs(lip._percentile(values, q) - float(np.percentile(values, q))) < 1e-9
+    assert lip._percentile(np.array([]), 50.0) == 0.0
+    rows, cols = lip.TABLE.shape
+    u, v = np.meshgrid(np.arange(cols) * lip.TABLE_U, np.arange(rows) * lip.TABLE_V)
+    assert np.allclose(lip._table_at(u, v), lip.TABLE, atol=1e-6) and np.allclose(lip._table_at(-u, v), lip.TABLE, atol=1e-6)
+    assert np.allclose(lip._table_at(np.array([9.0]), np.array([-3.0])), lip.TABLE[0, -1]), "held at its edges"
+    seen = rng.permutation(np.concatenate([np.full(300, 0.2), np.full(700, -0.3)]))   # most points under the line: hair
+    a, b = lip._fit(seen, np.linspace(-1, 1, 1000))
+    assert abs(a - 0.2) < 0.1 and abs(b) < 0.05, f"the fit rests on the upper points: {a:.3f} {b:+.3f}"
 
 
 if __name__ == "__main__":

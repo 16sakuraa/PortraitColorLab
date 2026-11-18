@@ -18,7 +18,7 @@ Stages compared, all with Remove blemishes = 1, Strength = 0.6, Keep texture
   final      after smoothing                   PSNR, % of pixels that differ
   pores      after smoothing with Add pores    PSNR, % of pixels that differ
   small      as pores, for a small print (coarser grain)  PSNR, % of pixels that differ
-  shine      after smoothing with Reduce shine  PSNR, % of pixels that differ
+  shine      after smoothing with Reduce shine, glints and large patches  PSNR, % of pixels that differ
   hard       after smoothing for hard lighting   PSNR, % of pixels that differ
   brush      after smoothing, with brush strokes  PSNR, % of pixels that differ
              (the mask's own difference is added to the worst mask difference)
@@ -27,6 +27,10 @@ Stages compared, all with Remove blemishes = 1, Strength = 0.6, Keep texture
   look       after smoothing, with Under-eyes and Skin tone at full  PSNR, % of pixels that differ
   tone       as look, but with the face's brightness taken to be TONE_LUMA, so the curve
              is used on every photo            PSNR, % of pixels that differ
+  strays     after smoothing, with Tidy stray hairs at full  PSNR, % of pixels that differ
+  level      after smoothing, with Straighten head at full   PSNR, % of pixels that differ
+  lip        after smoothing, with Thin moustache at full, told there is one (these photos
+             have none)                        PSNR, % of pixels that differ
              (the faces' measured brightness is compared too, and the skin area the
              tone goes by, with Face only, is added to the worst mask difference)
 PSNR above ~45 dB is invisible; "identical" means every pixel matches. A mean
@@ -53,6 +57,7 @@ import smoother  # noqa: E402
 import blemish   # noqa: E402
 import heal      # noqa: E402
 import look      # noqa: E402
+import lip       # noqa: E402
 import mask_edit  # noqa: E402
 
 PARAMS = {"blemish": 1.0, "strength": 0.6, "texture": 0.6, "pores": 0.0}
@@ -109,13 +114,14 @@ def names():
 
 def ref() -> None:
     os.makedirs(REF, exist_ok=True)
-    lumas = {}
+    lumas, brights = {}, {}
     for n in names():
         img = cv2.imread(os.path.join(TEST, n + ".png"))
         faces = smoother._detect_faces(img)
-        mask, area, points = smoother.skin_layers(img, faces=faces)
+        mask, area, points, seg = smoother.skin_layers(img, faces=faces, with_seg=True)
         assert np.array_equal(mask, smoother.build_skin_mask(img, faces=faces))
         lumas[n] = look.skin_luma(img, mask, faces)
+        brights[n] = look.bright_colours(img, mask, faces)
         face_mask, face_area, _ = smoother.skin_layers(img, faces=faces, face_only=True)
         face_mask.astype(np.float32).tofile(os.path.join(REF, n + ".mask_face.f32"))
         face_area.astype(np.float32).tofile(os.path.join(REF, n + ".area_face.f32"))
@@ -128,6 +134,7 @@ def ref() -> None:
                                      GRAIN_STAGE)
         shiny = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PARAMS["pores"],
                                      shine=SHINE_STAGE)
+        shiny = look.finish(shiny, mask, area, points, lumas[n], shine=SHINE_STAGE, faces=faces, bright=brights[n])
         hard = smoother.smooth_face(healed, PARAMS["strength"], PARAMS["texture"], mask, faces, PARAMS["pores"],
                                     light=LIGHT_STAGE)
         region = mask_edit.region_of(mask_edit.layer_from(BRUSH_STROKES, img.shape[1], img.shape[0]), img.shape[1], img.shape[0])
@@ -147,6 +154,12 @@ def ref() -> None:
                     look.finish(final, mask, area, points, lumas[n], EYES_STAGE, TONE_STAGE))
         cv2.imwrite(os.path.join(REF, n + ".tone.png"),
                     look.finish(final, mask, area, points, TONE_LUMA, EYES_STAGE, TONE_STAGE))
+        cv2.imwrite(os.path.join(REF, n + ".strays.png"),
+                    look.finish(final, mask, area, points, lumas[n], faces=faces, strays=1.0, person=look.person_of(seg)))
+        cv2.imwrite(os.path.join(REF, n + ".level.png"), look.finish(final, mask, area, points, lumas[n], level=1.0))
+        cv2.imwrite(os.path.join(REF, n + ".lip.png"),
+                    smoother.smooth_face(lip.clear(healed, points, mask, 1.0, force=True), PARAMS["strength"], PARAMS["texture"],
+                                         mask, faces, PARAMS["pores"]))
         mask.astype(np.float32).tofile(os.path.join(REF, n + ".mask.f32"))
         brushed_mask.astype(np.float32).tofile(os.path.join(REF, n + ".mask_brush.f32"))
         cv2.imwrite(os.path.join(REF, n + ".healed.png"), healed)
@@ -160,7 +173,7 @@ def ref() -> None:
     with open(os.path.join(REF, "params.json"), "w") as fh:
         json.dump({**PARAMS, "pores_stage": PORES_STAGE, "grain_stage": GRAIN_STAGE, "shine_stage": SHINE_STAGE,
                    "light_stage": LIGHT_STAGE, "eyes_stage": EYES_STAGE, "tone_stage": TONE_STAGE,
-                   "tone_luma": TONE_LUMA, "lumas": lumas,
+                   "tone_luma": TONE_LUMA, "lumas": lumas, "brights": brights,
                    "brush_strokes": BRUSH_STROKES, "heal_strokes": HEAL_STROKES,
                    "blemish_engine": blemish.ENGINE}, fh)
 
@@ -174,14 +187,17 @@ def compare() -> int:
     worst = float("inf")
     worst_mask = 0.0
     print(f"{'image':10s} {'mask max/mean diff':>20s} {'face only':>20s} {'healed':>24s} {'final':>24s} {'pores':>24s} "
-          f"{'small':>24s} {'shine':>24s} {'hard':>24s} {'brush':>24s} {'heal':>24s} {'look':>24s} {'tone':>24s}")
+          f"{'small':>24s} {'shine':>24s} {'hard':>24s} {'brush':>24s} {'heal':>24s} {'look':>24s} {'tone':>24s} "
+          f"{'strays':>24s} {'level':>24s} {'lip':>24s}")
     with open(os.path.join(REF, "params.json")) as fh:
-        lumas = json.load(fh).get("lumas", {})
+        saved = json.load(fh)
+    lumas, brights = saved.get("lumas", {}), saved.get("brights", {})
     try:
         with open(os.path.join(OUT, "lumas.json")) as fh:
-            web_lumas = json.load(fh)
+            web = json.load(fh)
     except FileNotFoundError:
-        web_lumas = {}
+        web = {}
+    web_lumas, web_brights = web.get("lumas", web), web.get("brights", {})
     worst_luma = 0.0
     for n in names():
         img = cv2.imread(os.path.join(TEST, n + ".png"))
@@ -202,7 +218,13 @@ def compare() -> int:
             worst_luma = max(worst_luma, abs(lumas[n] - web_lumas[n]))
         elif lumas.get(n) != web_lumas.get(n):
             worst_luma = float("inf")
-        for stage in ("healed", "final", "pores", "small", "shine", "hard", "brush", "heal", "look", "tone"):
+        ours, theirs = brights.get(n) or [], web_brights.get(n) or []
+        if len(ours) != len(theirs) or any((a is None) != (b is None) for a, b in zip(ours, theirs)):
+            worst_luma = float("inf")
+        for a, b in zip(ours, theirs):
+            if a is not None and b is not None:
+                worst_luma = max(worst_luma, max(abs(x - y) for x, y in zip(a, b)))
+        for stage in ("healed", "final", "pores", "small", "shine", "hard", "brush", "heal", "look", "tone", "strays", "level", "lip"):
             a = cv2.imread(os.path.join(REF, f"{n}.{stage}.png"))
             b = cv2.imread(os.path.join(OUT, f"{n}.{stage}.png"))
             p = _psnr(a, b)
@@ -212,9 +234,9 @@ def compare() -> int:
                 worst = min(worst, p)
         print(f"{n:10s} {cells[0]:>20s} {cells[1]:>20s} {cells[2]:>24s} {cells[3]:>24s} {cells[4]:>24s} "
               f"{cells[5]:>24s} {cells[6]:>24s} {cells[7]:>24s} {cells[8]:>24s} {cells[9]:>24s} "
-              f"{cells[10]:>24s} {cells[11]:>24s}")
+              f"{cells[10]:>24s} {cells[11]:>24s} {cells[12]:>24s} {cells[13]:>24s} {cells[14]:>24s}")
     print(f"worst smoothing-stage PSNR: {worst:.1f} dB; worst mean mask difference: {worst_mask:.5f}; "
-          f"worst difference in a face's brightness: {worst_luma:.6f}")
+          f"worst difference in a face's brightness or its brighter skin's colour: {worst_luma:.6f}")
     return 0
 
 

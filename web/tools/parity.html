@@ -16,7 +16,7 @@ const st = await pipeline.init(log, { blemishEngine: params.blemish_engine });
 log('engine: ' + st.engine + ', blemish: ' + st.blemishEngine);
 const save = async (name, blob) => fetch('/__save/' + name, { method: 'POST', body: blob });
 const png = async (image) => { const c = new OffscreenCanvas(image.width, image.height); c.getContext('2d').putImageData(image, 0, 0); return c.convertToBlob({ type: 'image/png' }); };
-const results = {}, lumas = {};
+const results = {}, lumas = {}, brights = {};
 for (const n of names) {
   const { image } = await decode(await (await fetch('../test/' + n + '.png')).blob());
   const bgr = matFromImage(st.cv, image);
@@ -36,7 +36,17 @@ for (const n of names) {
   await save(n + '.look.png', await png(imageFromMat(st.cv, looked)));
   await save(n + '.tone.png', await png(imageFromMat(st.cv, toned)));
   looked.delete(); toned.delete();
+  const tidied = pipeline.render(bgr, a, { ...params, strays: 1 });
+  await save(n + '.strays.png', await png(imageFromMat(st.cv, tidied)));
+  tidied.delete();
+  const levelled = pipeline.render(bgr, a, { ...params, level: 1 });
+  await save(n + '.level.png', await png(imageFromMat(st.cv, levelled)));
+  levelled.delete();
+  const lipped = pipeline.render(bgr, a, { ...params, lip: 1, lipForce: true });
+  await save(n + '.lip.png', await png(imageFromMat(st.cv, lipped)));
+  lipped.delete();
   lumas[n] = a.luma;
+  brights[n] = a.bright;
   const wholeMask = (m) => {
     const full = new Float32Array(bgr.rows * bgr.cols);
     for (let y = 0; y < m.h; y++) full.set(m.data.subarray(y * m.w, (y + 1) * m.w), (y + m.y0) * bgr.cols + m.x0);
@@ -68,7 +78,7 @@ for (const n of names) {
   log(`${n}: ${JSON.stringify(results[n])}`);
   bgr.delete(); healedOnly.delete(); final.delete(); withPores.delete(); small.delete(); shiny.delete(); hard.delete();
 }
-await save('lumas.json', new Blob([JSON.stringify(lumas)]));
+await save('lumas.json', new Blob([JSON.stringify({ lumas, brights })]));
 window.parityDone = results;
 log('done');
 </script>

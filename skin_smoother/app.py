@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 
 import smoother
 import blemish
+import lip
 import look
 import photo_io
 
@@ -49,7 +50,7 @@ class App(tk.Tk):
         self.photo_info = photo_io.PhotoInfo()  # its colour profile, EXIF, JPEG settings
         self.preview_bgr = None    # scaled original for display
         self.preview_mask = None   # cached mask for the preview
-        self.preview_look = None   # cached (skin area, landmarks, faces' brightness) for the preview
+        self.preview_look = None   # cached (skin area, landmarks, faces' brightness, brighter skins' colours, outline)
         self.preview_corr = None   # cached blemish correction for the preview
         self.src_path = None
         self._after_id = None
@@ -138,6 +139,21 @@ class App(tk.Tk):
         ttk.Scale(more, from_=0, to=100, variable=self.tone, command=self._on_slider,
                   length=160).pack(side=tk.LEFT, padx=(4, 16))
 
+        ttk.Label(more, text="Straighten head").pack(side=tk.LEFT)
+        self.level = tk.DoubleVar(value=0)
+        ttk.Scale(more, from_=0, to=100, variable=self.level, command=self._on_slider,
+                  length=140).pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(more, text="Tidy stray hairs").pack(side=tk.LEFT)
+        self.strays = tk.DoubleVar(value=0)
+        ttk.Scale(more, from_=0, to=100, variable=self.strays, command=self._on_slider,
+                  length=140).pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(more, text="Thin moustache").pack(side=tk.LEFT)
+        self.lip = tk.DoubleVar(value=0)
+        ttk.Scale(more, from_=0, to=100, variable=self.lip, command=self._on_slider,
+                  length=140).pack(side=tk.LEFT, padx=(4, 16))
+
         self.status = ttk.Label(more, text="Open an image to begin.")
         self.status.pack(side=tk.RIGHT)
 
@@ -197,9 +213,11 @@ class App(tk.Tk):
         self._render_preview()
 
     def _analyse_preview(self):
-        self.preview_mask, area, points = smoother.skin_layers(self.preview_bgr, faces=self.preview_faces,
-                                                               face_only=self.face_only.get())
-        self.preview_look = area, points, look.skin_luma(self.preview_bgr, self.preview_mask, self.preview_faces)
+        self.preview_mask, area, points, seg = smoother.skin_layers(self.preview_bgr, faces=self.preview_faces,
+                                                                    face_only=self.face_only.get(), with_seg=True)
+        self.preview_look = (area, points, look.skin_luma(self.preview_bgr, self.preview_mask, self.preview_faces),
+                             look.bright_colours(self.preview_bgr, self.preview_mask, self.preview_faces),
+                             look.person_of(seg))
         self.preview_corr, _ = blemish.correction(self.preview_bgr, self.preview_faces, self.preview_mask)
 
     def _on_face_only(self):
@@ -252,13 +270,16 @@ class App(tk.Tk):
         t = self.texture.get() / 100.0
         base = blemish.apply(self.preview_bgr, self.preview_corr,
                              self.blemish.get() / 100.0)
+        base = lip.clear(base, self.preview_look[1], self.preview_mask, self.lip.get() / 100.0)
         out = smoother.smooth_face(base, strength=s, texture=t,
                                    mask=self.preview_mask, faces=self.preview_faces,
                                    pores=self.pores.get() / 100.0, grain=self._grain(),
                                    shine=self.shine.get() / 100.0, light=self._light())
-        area, points, luma = self.preview_look
+        area, points, luma, bright, person = self.preview_look
         out = look.finish(out, self.preview_mask, area, points, luma,
-                          self.eyes.get() / 100.0, self.tone.get() / 100.0)
+                          self.eyes.get() / 100.0, self.tone.get() / 100.0,
+                          self.shine.get() / 100.0, self.preview_faces, bright,
+                          self.strays.get() / 100.0, person, None, self.level.get() / 100.0)
         self._smooth_photo = to_photo(out)
         self.smooth_label.config(image=self._smooth_photo)
 
@@ -285,7 +306,9 @@ class App(tk.Tk):
         g = self._grain()
         sh = self.shine.get() / 100.0
         li = self._light()
-        eyes, tone = self.eyes.get() / 100.0, self.tone.get() / 100.0
+        eyes, tone, strays = self.eyes.get() / 100.0, self.tone.get() / 100.0, self.strays.get() / 100.0
+        level = self.level.get() / 100.0
+        moustache = self.lip.get() / 100.0
 
         b = self.blemish.get() / 100.0
         face_only = self.face_only.get()
@@ -293,12 +316,15 @@ class App(tk.Tk):
 
         def work():
             faces = smoother._detect_faces(self.full_bgr)
-            mask, area, points = smoother.skin_layers(self.full_bgr, faces=faces, face_only=face_only)
+            mask, area, points, seg = smoother.skin_layers(self.full_bgr, faces=faces, face_only=face_only, with_seg=True)
             corr, _ = blemish.correction(self.full_bgr, faces, mask)
             base = blemish.apply(self.full_bgr, corr, b)
+            base = lip.clear(base, points, mask, moustache)
             out = smoother.smooth_face(base, strength=s, texture=t, mask=mask, faces=faces, pores=p, grain=g,
                                        shine=sh, light=li)
-            out = look.finish(out, mask, area, points, look.skin_luma(self.full_bgr, mask, faces), eyes, tone)
+            out = look.finish(out, mask, area, points, look.skin_luma(self.full_bgr, mask, faces), eyes, tone,
+                              sh, faces, look.bright_colours(self.full_bgr, mask, faces), strays, look.person_of(seg),
+                              None, level)
             ok = photo_io.write(path, out, info)
             self.after(0, lambda: self._save_done(ok, path))
 

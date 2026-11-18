@@ -131,7 +131,7 @@
     <h2 data-i18n="panel.skinPhoto">Skin and photo</h2>
     <div class="ctl">
       <label for="lighting" data-i18n="ctl.lighting">Lighting</label>
-      <select id="lighting" disabled data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
+      <select id="lighting" disabled data-i18n-title="ctl.lightingTitle" title="Hard or patchy light (on-camera flash, a bare window) leaves mottled light and shadow; this evens it out more and keeps the face's shading. It won't blend a sharp shadow edge, and the nose is evened only as on soft light, so it keeps its shape. The Studio ID photo look uses it on soft light too, to even blotches and folds more.">
         <option value="soft" selected data-i18n="ctl.lightingSoft">Soft (studio)</option>
         <option value="hard" data-i18n="ctl.lightingHard">Hard or patchy (flash)</option>
       </select>
@@ -161,7 +161,7 @@
       <input id="texture" type="range" min="0" max="100" value="60" disabled>
     </div>
     <div class="ctl">
-      <label for="shine" data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
+      <label for="shine" data-i18n-title="ctl.shineTitle" title="Tames the bright glints of oily skin, and brings large shiny patches on the forehead, nose and cheeks back towards the skin's own colour. Dark pores, freckles and coloured marks are left alone."><span data-i18n="ctl.shine">Reduce shine</span> <span id="rval">0</span></label>
       <input id="shine" type="range" min="0" max="100" value="0" disabled>
     </div>
     <div class="ctl">
@@ -180,6 +180,18 @@
   </section>
   <section data-step="3">
     <h2 data-i18n="panel.finishing">Finishing</h2>
+    <div class="ctl">
+      <label for="level" data-i18n-title="ctl.levelTitle" title="Turns a tilted head upright, by the share of its tilt set here. The head turns as one piece and the turn fades out down the neck, so the shoulders stay where they are. It is left off while the brush is in use."><span data-i18n="ctl.level">Straighten head</span> <span id="lval">0</span></label>
+      <input id="level" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <div class="ctl">
+      <label for="strays" data-i18n-title="ctl.straysTitle" title="Removes stray hairs sticking out around the head, against a plain backdrop. A busy background is left alone, and the hair's own outline isn't redrawn."><span data-i18n="ctl.strays">Tidy stray hairs</span> <span id="hval">0</span></label>
+      <input id="strays" type="range" min="0" max="100" value="0" disabled>
+    </div>
+    <div class="ctl">
+      <label for="lip" data-i18n-title="ctl.lipTitle" title="Takes a thin moustache, or its shadow, off the upper lip: the skin there is replaced, with the cheeks' own grain, not just lightened. For a portrait taken straight on with the mouth closed, as for an ID photo: a smiling or turned face is left alone, and so are a bare lip and a full moustache. A beard stays, so leave this off for a face with one. A mole right above the lip goes with the hair: bring it back with the brush's Restore."><span data-i18n="ctl.lip">Thin moustache</span> <span id="mval">0</span></label>
+      <input id="lip" type="range" min="0" max="100" value="0" disabled>
+    </div>
     <p class="note" data-i18n="note.step3">Bring back sharpness around the eyes, nostrils and jawline with Undo smoothing, cover scars with Heal, and click leftover spots away with Remove spot. Then press Download.</p>
   </section>
   <section id="brushbox">
