@@ -185,6 +185,9 @@ python app.py
   on a face straight on with its mouth closed. A smiling or turned face, a bare lip
   and a full moustache are left alone; a beard stays, so leave it off for a face
   with one; a mole right above the lip goes with the hair (Restore brings it back).
+  Ticking **Also a full moustache** under it takes a full, dense
+  one off too, following it to its ends; the box is switched off again for every new
+  photo, and a moustache that runs into a beard still shows.
 - **Straighten head** turns a tilted head upright by the share set (0 = off).
 - **Balance skin tone** brings a face much darker or brighter than most part of the
   way back to the middle of the range (0 = off).
@@ -254,7 +257,8 @@ keeps coarser grain for small prints such as ID photos. `--lighting hard` evens 
 the mottled light and shadow of flash photos. `--under-eyes`, `--skin-tone`,
 `--stray-hairs`, `--straighten` and `--moustache` (0..1, off by default) even the skin under the eyes,
 balance skin brightness, tidy stray hairs around the head, turn a tilted head upright and take a thin
-moustache off the upper lip; the Studio
+moustache off the upper lip. With `--moustache`, `--full-moustache` takes a full, dense one too
+(the page's Also a full moustache box; it is left alone otherwise, and one that runs into a beard still shows). The Studio
 ID photo look is `--strength 0.8 --texture 0.75 --lighting hard --print-size small
 --skin-tone 1`. `--face-only` leaves
 out the neck and other body skin. If no output path is given, it writes

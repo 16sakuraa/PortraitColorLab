@@ -1986,7 +1986,9 @@ def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
     scripts = read("js", "app.js") + read("js", "mask_brush.js") + read("js", "history.js") + serve.PAGE
     fields = re.findall(r"\{ id: '(\w+)', key: '([\w.]+)'", read("js", "history.js"))
     assert len(fields) > 8 and {key for _, key in fields} <= set(en), "History's names for the settings"
-    assert all(f'id="{i}"' in read("index.html") and f'id="{i}"' in serve.PAGE for i, _ in fields), "on both pages"
+    assert all(f'id="{i}"' in serve.PAGE for i, _ in fields), "on the desktop app's page"
+    assert all(f'id="{i}"' in read("index.html") for i, _ in fields), "and on the web page"
+    assert "lipfull" in [i for i, _ in fields], "a full moustache's box is a setting on both"
     used = set(re.findall(r'data-i18n(?:-html|-title|-alt|-aria)?="([\w.]+)"', pages))
     used |= set(re.findall(r"\bt\('([\w.]+)'", scripts))
     for m in ("protect", "unsmooth", "skin", "heal", "spot", "light", "line", "resmooth", "removeSkin"):
@@ -2100,17 +2102,20 @@ def test_hard_lighting_leaves_the_nose_at_soft_lighting():
                           smoother.smooth_face(img, 1.0, 0.6, mask, FACE, light=hard)), "the same every time"
 
 
-def lip_face(moustache: float = 0.25, size: float = 1.0, seed: int = 3):
+def lip_face(moustache: float = 0.25, size: float = 1.0, seed: int = 3, reach: float = 1.2):
     """A drawn face around the mouth, 1000 x 900 at size 1: (photo, landmarks, smoothing mask, the
     moustache's own map 0..1). The skin between lip and nose is shaded as a bare lip is
-    (lip.TABLE); moustache darkens a band above the lip by that share, with strands in it."""
+    (lip.TABLE); moustache darkens a band above the lip by that share, with strands in it.
+    reach: how far across the band goes (1 = the mouth's corners)."""
     h, w = round(900 * size), round(1000 * size)
     pts = np.zeros((face_landmarks.POINTS, 2), np.float64)
     place = {33: (380, 350), 133: (440, 350), 362: (560, 350), 263: (620, 350), 2: (500, 540), 205: (390, 500), 425: (610, 500),
              61: (430, 620), 185: (445, 612), 40: (462, 606), 39: (478, 602), 37: (490, 599), 0: (500, 600), 267: (510, 599),
              269: (522, 602), 270: (538, 606), 409: (555, 612), 291: (570, 620), 375: (555, 632), 321: (538, 640),
              405: (522, 646), 314: (510, 649), 17: (500, 650), 84: (490, 649), 181: (478, 646), 91: (462, 640), 146: (445, 632),
-             13: (500, 623), 14: (500, 625)}
+             13: (500, 623), 14: (500, 625),
+             78: (436, 620), 191: (447, 621), 80: (462, 622), 81: (478, 623), 82: (490, 623), 312: (510, 623), 311: (522, 623),
+             310: (538, 622), 415: (553, 621), 308: (564, 620)}
     for i, xy in place.items():
         pts[i] = np.array(xy, np.float64) * size
     rng = np.random.default_rng(seed)
@@ -2119,7 +2124,7 @@ def lip_face(moustache: float = 0.25, size: float = 1.0, seed: int = 3):
     u, v = frame.uv(xx, yy)
     near = smoother._smoothstep(2.6 - np.abs(u), 0.0, 0.4) * smoother._smoothstep(v + 0.9, 0.0, 0.3) * smoother._smoothstep(1.3 - v, 0.0, 0.3)
     bare = 1.0 + near * (lip._table_at(u, v) / 0.97 - 1.0)
-    band = smoother._smoothstep(1.2 - np.abs(u), 0.0, 0.15) * smoother._smoothstep(v, 0.0, 0.05) * smoother._smoothstep(0.42 - v, 0.0, 0.08)
+    band = smoother._smoothstep(reach - np.abs(u), 0.0, 0.15) * smoother._smoothstep(v, 0.0, 0.05) * smoother._smoothstep(0.42 - v, 0.0, 0.08)
     strands = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), max(0.6, 0.8 * size))
     hair = band * (1.0 + 0.5 * strands / float(strands.std()))
     tone = (0.72 + 0.06 * np.sin(xx / (170 * size))) * bare * (1.0 - moustache * np.clip(hair, 0.0, 2.0)) \
@@ -2179,6 +2184,79 @@ def test_a_bare_lip_and_a_full_moustache_are_left_alone():
     assert lip.clear(full, [pts], mask, 1.0) is full, "a full moustache is kept whole"
     forced = lip.clear(full, [pts], mask, 1.0, force=True)
     assert forced is not full, "unless the question is skipped (the parity check)"
+
+
+def test_a_full_moustache_goes_when_it_is_asked_for():
+    img, pts, mask, band = lip_face(0.6)
+    bare = lip_face(0.0)[0]
+    where = band > 0.9
+    before = darkness(img, bare, where)
+    out = lip.clear(img, [pts], mask, 1.0, full=True)
+    assert out is not img
+    after = darkness(out, bare, where)
+    assert before > 0.4, f"the drawn moustache should be dense: {before:.3f}"
+    assert abs(after) < 0.1 * before, f"left of the moustache: {after:.3f} of {before:.3f}"
+    grey = lambda a: cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    grain = lambda a: grey(a) - cv2.GaussianBlur(grey(a), (0, 0), 3.0)
+    cheek = np.zeros(band.shape, bool)
+    cheek[440:560, 340:440] = True
+    assert 0.5 * grain(img)[cheek].std() < grain(out)[where].std() < 2.0 * grain(img)[cheek].std() < grain(img)[where].std(), \
+        "the new skin has a cheek's grain, not the strands' and not none"
+    lips = np.zeros(band.shape, np.uint8)
+    cv2.fillPoly(lips, [np.round(pts[list(lip.UPPER + lip.LOWER)]).astype(np.int32)], 255)
+    inner = cv2.erode(lips, np.ones((15, 15), np.uint8)) > 0
+    assert np.array_equal(out[inner], img[inner]), "the lips themselves stay"
+    far = np.ones(band.shape, bool)
+    far[430:800, 200:800] = False
+    assert np.array_equal(out[far], img[far]), "nothing changes away from the mouth"
+    assert np.array_equal(out, lip.clear(img, [pts], mask, 1.0, full=True)), "the same every time"
+
+
+def test_asking_for_a_full_moustache_changes_nothing_for_a_thin_one_or_a_bare_lip():
+    thin, pts, mask, band = lip_face()
+    assert np.array_equal(lip.clear(thin, [pts], mask, 1.0, full=True), lip.clear(thin, [pts], mask, 1.0)), "a thin one goes the thin way"
+    bare = lip_face(0.0)[0]
+    assert lip.clear(bare, [pts], mask, 1.0, full=True) is bare, "a bare lip has nothing to remove"
+    full = lip_face(0.6)[0]
+    assert lip.clear(full, [pts], mask, 0.0, full=True) is full, "no amount, no change"
+
+
+def test_a_full_moustache_is_followed_to_its_ends():
+    img, pts, mask, band = lip_face(0.6, reach=1.9)             # past where the thin moustache's zone fades out
+    bare = lip_face(0.0)[0]
+    u, v = lip._Frame(pts).uv(*np.meshgrid(np.arange(1000.0), np.arange(900.0)))
+    ends = (band > 0.9) & (np.abs(u) > 1.6) & (np.abs(u) < 1.8)
+    before = darkness(img, bare, ends)
+    thin_way = darkness(lip.clear(img, [pts], mask, 1.0, force=True), bare, ends)
+    after = darkness(lip.clear(img, [pts], mask, 1.0, full=True), bare, ends)
+    assert thin_way > 0.4 * before, f"the fixed zone leaves the ends: {thin_way:.3f} of {before:.3f}"
+    assert abs(after) < 0.15 * before, f"left of the ends: {after:.3f} of {before:.3f}"
+
+
+def test_a_full_moustache_keeps_the_guards_and_the_brush():
+    img, pts, mask, band = lip_face(0.6)
+    turned = pts.copy()
+    turned[2, 0] += 0.1 * 180
+    assert lip.clear(img, [turned], mask, 1.0, full=True) is img, "a turned head is left alone"
+    edit = -np.ones((300, 250), np.float32)
+    out = lip.clear(img, [pts], mask, 1.0, (250, 480, edit), full=True)       # Restore over the photo's left half of the mouth
+    assert np.array_equal(out[480:780, 250:500], img[480:780, 250:500]), "restored: as it was"
+    bare = lip_face(0.0)[0]
+    right = (band > 0.9) & (np.arange(band.shape[1])[None, :] > 520)
+    assert abs(darkness(out, bare, right)) < 0.15 * darkness(img, bare, right), "the other half still goes"
+    where = band > 0.9
+    half = darkness(lip.clear(img, [pts], mask, 0.5, full=True), bare, where)
+    assert 0.35 * darkness(img, bare, where) < half < 0.65 * darkness(img, bare, where), "the amount is a share"
+
+
+def test_a_full_moustache_goes_at_other_sizes():
+    for size in (0.5, 2.0):
+        img, pts, mask, band = lip_face(0.6, size)
+        bare = lip_face(0.0, size)[0]
+        where = band > 0.9
+        before = darkness(img, bare, where)
+        after = darkness(lip.clear(img, [pts], mask, 1.0, full=True), bare, where)
+        assert abs(after) < 0.15 * before, f"at {size}x, left of the moustache: {after:.3f} of {before:.3f}"
 
 
 def test_the_moustache_step_is_for_a_face_straight_on_with_its_mouth_closed():
@@ -2242,6 +2320,22 @@ def test_moustache_helpers():
     seen = rng.permutation(np.concatenate([np.full(300, 0.2), np.full(700, -0.3)]))   # most points under the line: hair
     a, b = lip._fit(seen, np.linspace(-1, 1, 1000))
     assert abs(a - 0.2) < 0.1 and abs(b) < 0.05, f"the fit rests on the upper points: {a:.3f} {b:+.3f}"
+    corners = np.array([(0.0, 0.0), (10.0, 5.0), (20.0, 5.0), (30.0, 0.0)])
+    curve = lip._spline(corners)
+    assert len(curve) == 3 * 8 + 1 and all(np.abs(curve - c).sum(axis=1).min() < 1e-9 for c in corners), "the curve goes through its points"
+    assert float(np.abs(np.diff(curve, axis=0)).max()) < 2.0, "in small steps"
+    within = np.zeros((20, 30), bool)
+    within[5, 2:12] = within[5, 14:28] = True               # two runs with a gap between them
+    seed = np.zeros((20, 30), bool)
+    seed[5, 3] = True
+    got = lip._grown(seed, within)
+    assert got[5, 2:12].all() and not got[5, 14:28].any() and got.sum() == 10, "spread through what it touches, no further"
+    data = np.zeros((40, 40, 3), np.float32)
+    data[:, :20] = 1.0
+    known = np.zeros((40, 40), np.float32)
+    known[:, :5] = known[:, 35:] = 1.0                      # known at both sides: 1 on the left, 0 on the right
+    carried = lip._fill_in(data, known, (0.4, 0.1), 40.0, 0.02, 0.2)[:, :, 0]
+    assert carried[20, 2] > 0.9 and carried[20, 37] < 0.1 and 0.2 < carried[20, 20] < 0.8, "carried in from where it is known"
 
 
 if __name__ == "__main__":

@@ -72,6 +72,7 @@ const params = () => ({
   tone: +$('tone').value / 100,
   strays: +$('strays').value / 100,
   lip: +$('lip').value / 100,
+  lipFull: $('lipfull').checked,
   level: +$('level').value / 100,
   pores: +$('pores').value / 100,
   print: $('print').value,
@@ -82,7 +83,7 @@ const params = () => ({
 });
 
 function setControls(enabled) {
-  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'strays', 'level', 'lip', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
+  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'strays', 'level', 'lip', 'lipfull', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
 let summary = () => '', opened = null;
@@ -136,6 +137,7 @@ worker.onmessage = ({ data }) => {
       setControls(true);
       opened = data;
       describe(data);
+      $('lipfull').checked = false;     // a full moustache is a choice made for each photo
       history.start();
       requestRender();
       break;
@@ -202,6 +204,12 @@ for (const [id, label] of [['blemish', 'bval'], ['strength', 'sval'], ['texture'
 }
 
 $('faceonly').addEventListener('change', scheduleRender);
+// A full moustache goes by the same slider: ticking the box with the slider at nothing sets it to all
+// (on input, which comes before change, so History records the slider as it then is).
+$('lipfull').addEventListener('input', () => {
+  if ($('lipfull').checked && +$('lip').value === 0) { $('lip').value = 100; $('mval').textContent = '100'; }
+});
+$('lipfull').addEventListener('change', scheduleRender);
 $('print').addEventListener('change', scheduleRender);
 $('lighting').addEventListener('change', scheduleRender);
 

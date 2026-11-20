@@ -114,6 +114,8 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   under other light check the result. A beard or stubble around the mouth stays, so
   leave it off for a face with one. It can't tell a mole from hair: a mark right
   above the lip goes with it, and the brush's Restore brings it back. Off by default.
+  Ticking **Also a full moustache** under the slider takes a full one off too: the
+  hair is followed to its ends, and the box is switched off again for every new photo.
 - **Straighten head:** turns a tilted head upright, by the share of its tilt you set.
   Everything above the jaw turns as one piece and the turn fades out down the neck, so
   the shoulders and clothes stay where they are. Nothing is made up and the face keeps

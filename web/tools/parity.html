@@ -45,6 +45,9 @@ for (const n of names) {
   const lipped = pipeline.render(bgr, a, { ...params, lip: 1, lipForce: true });
   await save(n + '.lip.png', await png(imageFromMat(st.cv, lipped)));
   lipped.delete();
+  const lippedFull = pipeline.render(bgr, a, { ...params, lip: 1, lipForce: true, lipFull: true });
+  await save(n + '.lipfull.png', await png(imageFromMat(st.cv, lippedFull)));
+  lippedFull.delete();
   lumas[n] = a.luma;
   brights[n] = a.bright;
   const wholeMask = (m) => {

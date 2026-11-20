@@ -168,6 +168,7 @@ PAGE ="""<!doctype html>
   .ctl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ctl label { font-size: 12px; opacity: .75; display: flex; justify-content: space-between; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .75; cursor: pointer; }
+  .ctl label.check { justify-content: flex-start; }
   input[type=range] { width: 100%; margin: 4px 0; accent-color: #4b7bec; }
   select { width: 100%; font: inherit; font-size: 13px; padding: 3px 4px; border-radius: 6px; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px;
@@ -325,6 +326,7 @@ PAGE ="""<!doctype html>
     <div class="ctl">
       <label data-i18n-title="ctl.lipTitle" title="Takes a thin moustache, or its shadow, off the upper lip: the skin there is replaced, with the cheeks' own grain, not just lightened. For a portrait taken straight on with the mouth closed, as for an ID photo: a smiling or turned face is left alone, and so are a bare lip and a full moustache. A beard stays, so leave this off for a face with one. A mole right above the lip goes with the hair: bring it back with the brush's Restore."><span data-i18n="ctl.lip">Thin moustache</span> <span id="mval">0</span></label>
       <input id="lip" type="range" min="0" max="100" value="0">
+      <label class="check" data-i18n-title="ctl.lipFullTitle" title="Takes a full, dense moustache off too, following it out to its ends; the Thin moustache slider says how much of it goes. Tick it for the photo that needs it: it is switched off again for every new photo. A moustache that runs into a beard still shows."><input id="lipfull" type="checkbox"> <span data-i18n="ctl.lipFull">Also a full moustache</span></label>
     </div>
     <p class="note" data-i18n="note.step3">Bring back sharpness around the eyes, nostrils and jawline with Undo smoothing, cover scars with Heal, and click leftover spots away with Remove spot. Then press Download.</p>
   </section>
@@ -441,6 +443,7 @@ function loadFile(f){
     $('after').src = original;          // under the loading cover until its retouch arrives
     setLoading('progress.finding');
     setStatus(() => t('progress.finding'), true);
+    $('lipfull').checked = false;       // a full moustache is a choice made for each photo
     history.start();
     $('drop').classList.add('hidden');
     $('workspace').classList.remove('hidden');
@@ -474,6 +477,12 @@ const valueLabel = {strength: 'sval', texture: 'tval', shine: 'rval', eyes: 'yva
   });
 });
 $('faceonly').addEventListener('change', process);
+// A full moustache goes by the same slider: ticking the box with the slider at nothing sets it to all
+// (on input, which comes before change, so History records the slider as it then is).
+$('lipfull').addEventListener('input', () => {
+  if ($('lipfull').checked && +$('lip').value === 0) { $('lip').value = 100; $('mval').textContent = '100'; }
+});
+$('lipfull').addEventListener('change', process);
 $('print').addEventListener('change', process);
 $('lighting').addEventListener('change', process);
 
@@ -528,6 +537,7 @@ async function runProcess(full = false){
         tone: +$('tone').value / 100,
         strays: +$('strays').value / 100,
         lip: +$('lip').value / 100,
+        lip_full: $('lipfull').checked,
         level: +$('level').value / 100,
         pores: +$('pores').value / 100,
         print: $('print').value,
@@ -634,6 +644,7 @@ class Handler(BaseHTTPRequestHandler):
             tone = float(payload.get("tone", 0.0))
             strays = float(payload.get("strays", 0.0))
             moustache = float(payload.get("lip", 0.0))
+            full_moustache = bool(payload.get("lip_full", False))
             # Straightening moves the photo under the brush's strokes: off while the brush is in use.
             level = 0.0 if payload.get("want_mask") else float(payload.get("level", 0.0))
             # The page asks for a preview while editing and the full size to download.
@@ -661,9 +672,9 @@ class Handler(BaseHTTPRequestHandler):
             if blemish_amt > 0 and blemish.have_model():
                 blemish_count = spots
                 healed = blemish.apply(img, corr, blemish_amt)
-            # A thin moustache, if asked for: before the healing brush, so its strokes go on top,
+            # A thin moustache, if asked for (a full one too, if that is ticked): before the healing brush, so its strokes go on top,
             # and not where the brush's Restore says to leave the photo alone.
-            healed = lip.clear(healed, extra["points"], mask, moustache, restored)
+            healed = lip.clear(healed, extra["points"], mask, moustache, restored, full=full_moustache)
             healed = heal.apply(healed, strokes)
             out = smoother.smooth_face(healed, strength=strength, texture=texture,
                                        mask=mask, faces=faces, pores=pores, grain=grain, shine=shine,

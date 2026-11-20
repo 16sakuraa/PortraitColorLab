@@ -1139,6 +1139,8 @@ def _cli() -> int:
                     help="tidy stray hairs around the head against a plain backdrop 0..1 (default 0, off)")
     ap.add_argument("--moustache", type=float, default=0.0,
                     help="take a thin moustache off the upper lip 0..1 (default 0, off); a full one is left alone")
+    ap.add_argument("--full-moustache", action="store_true",
+                    help="with --moustache: a full, dense moustache goes too")
     ap.add_argument("--face-only", action="store_true",
                     help="treat the face only, not the neck or other body skin")
     ap.add_argument("-b", "--blemish", type=float, default=0.0,
@@ -1170,7 +1172,7 @@ def _cli() -> int:
 
     if args.moustache > 0:
         import lip
-        healed = lip.clear(healed, points, mask, args.moustache)
+        healed = lip.clear(healed, points, mask, args.moustache, full=args.full_moustache)
     out = smooth_face(healed, strength=args.strength, texture=args.texture, mask=mask,
                       faces=faces, pores=args.pores, grain=PRINT_GRAIN[args.print_size],
                       shine=args.shine, light=LIGHTING[args.lighting])

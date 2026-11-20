@@ -26,9 +26,31 @@ Whether there is anything to remove is read from the strip just above the lip. A
 that is no darker there than a bare one is left as it is, so the step can stay on for a
 whole set of such portraits. The measure of "no darker" was set on one studio's
 portraits; under other light a shadowed lip may be taken for a faint moustache. A full,
-dense moustache is left alone too: taking half of one away helps nobody, and it reaches
-past what this step replaces. Stubble or a beard around the mouth is not touched, so a
-face with both loses the moustache and keeps the beard: leave the step off for it.
+dense moustache is left alone too, unless it is asked for (full, below): most who wear
+one keep it. Stubble or a beard around the mouth is not touched, so a face with both
+loses the moustache and keeps the beard: leave the step off for it.
+
+A full moustache (clear(..., full=True)) is more than a thin one made darker, so it has
+its own way through the same engine (_clear_full):
+
+  where    The hair is followed from its dense core, through whatever is dark and rough
+           like hair, to its thin ends: past the mouth's corners and down beside them,
+           and up to the nose. A fixed zone would cut it. Between its two halves the
+           hair is often fair, no darker than a bare lip; there its roughness alone
+           says it is hair.
+  tone     Most of the lip is under hair, so the table's shape is matched, colour
+           channel by channel, to the clear skin around the whole moustache and carried
+           inwards from there, wide where no clear skin is near.
+  grain    Pieces of each cheek's own patch, laid side by side and blended, each from a
+           different part of the patch: a copy moved this far would run into the nose
+           or a fold.
+  lip      The hair lies on the lip's edge and over it, so the edge that is left is the
+           one drawn here: a smooth curve through the mesh's points, at the photo's own
+           size. Hair lying over the upper lip takes the lip's own colour, carried along
+           the lip from where it is clear.
+
+A moustache that runs into a beard is cut where the bounds end, and the skin put in its
+place is matched to stubbled skin: it shows. That face is not what this is for.
 
 It doesn't tell a mole from hair: a mark right above the lip, inside a moustache or its
 shadow, goes with it. The brush's Restore brings it back (keep).
@@ -55,6 +77,7 @@ UPPER = (61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)      # the upper lip's
 LOWER = (291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61)     # the lower lip's, back again
 MOUTH_R, MOUTH_L, LIP_TOP, NOSE_BASE = 61, 291, 0, 2
 LIP_INNER_TOP, LIP_INNER_FOOT = 13, 14                          # where the lips meet: apart when the mouth is open
+LIP_INNER = (78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308)   # where the upper lip ends at the mouth's line, corner to corner
 CHEEK_R, CHEEK_L = 205, 425
 EYE_R, EYE_L = (33, 133), (263, 362)
 
@@ -128,6 +151,46 @@ TUNE = {
 }
 
 
+# A full moustache (_clear_full). Places in the lip's frame, sizes in eye distances, as in TUNE.
+FULL = {
+    "core": 0.25,          # this dark against a bare lip, inside the strip: the moustache's core
+    "core_wide": 1.15, "core_lo": 0.02, "core_hi": 0.65,
+    "hair_lo": 0.07,       # this dark and rough: hair,
+    "hair_hi": 0.18,       # this dark: hair whatever its grain
+    "rough": 1.6,          # rough: fine detail this many times the cheeks',
+    "rough_at": 0.03,      # measured over this radius
+    "mid_rough": 1.7, "mid_wide": 0.6,    # between the halves (u), this rough is hair even when it is not dark
+    "tail_dark": 0.035, "tail_rough": 1.3, "tail_reach": 0.10,   # fainter hair within this reach of the moustache goes with it
+    "bridge": 0.012,       # gaps this small between strands are closed
+    "wide": 2.0,           # the hair is followed this far across,
+    "top": 0.97,           # this far up (the nostrils are above),
+    "drop": 1.1,           # and this far down beside the mouth,
+    "drop_from": 0.85, "drop_to": 1.15,   # which opens between these (u): never under the lips
+    "bound_edge": 0.04,    # the bounds' soft edge
+    "grow": 0.035,         # the replaced area grows past the hair by this,
+    "soft": 0.02,          # with this soft an edge
+    "clear_off": 0.05,     # clear skin starts this far from the hair,
+    "clear_lo": -1.3, "clear_hi": 1.05,   # and is looked for between these heights (v)
+    "fill": (0.5, 0.25, 0.12, 0.06),      # its tone is carried inwards at these radii, the widest first,
+    "fill_lo": 0.02, "fill_hi": 0.2,      # each finer one taking over where this share of what it sees is clear skin
+    "span": (0.80, 1.20),  # the carried tone against the table's, per channel, is held to this
+    "shape_soft": 0.05,    # the table's shape is rounded by this
+    "tile": 0.12,          # the grain is laid in pieces of the cheek this large,
+    "tile_wander": 0.07,   # each taken up to this far from the middle of the cheek's patch
+    "lip_soft": 0.012,     # the lip's edge is this soft
+    "lip_band": 0.6,       # hair is looked for this far into the upper lip (share of its thickness),
+    "lip_dark": (0.06, 0.14),             # where it is darker than the lip's own tone by this,
+    "lip_strand": 0.006,   # judged at this radius,
+    "lip_reach": 0.04,     # and this near to where the skin above was replaced
+    "lip_fill": (0.16, 0.08, 0.04),       # the lip's tone is carried along the lip at these radii,
+    "lip_keep": (0.80, 0.92),             # from the lip that is this bright against its brighter half (the rest may be hair)
+    "lip_grain": 0.7,      # the new lip gets this share of the skin's grain, so it is not flat
+}
+# Where in the cheek's patch each piece of grain comes from (shares of tile_wander, across and down).
+WANDER = ((0.0, 0.0), (0.62, 0.31), (-0.45, 0.58), (0.21, -0.71), (-0.68, -0.29), (0.55, -0.52), (-0.18, 0.83),
+          (0.85, -0.05), (-0.32, -0.80), (-0.90, 0.20), (0.30, 0.75))
+
+
 def _luma(a: np.ndarray) -> np.ndarray:
     return a @ smoother._LUMA
 
@@ -163,6 +226,7 @@ class _Frame:
         order = np.argsort(across, kind="stable")
         self.edge_u, self.edge_x, self.edge_y = across[order], edge[order, 0], edge[order, 1]
         self.lips = p[list(UPPER + LOWER)]
+        self.inner = p[list(LIP_INNER)]
         self.cheeks = (p[CHEEK_R], p[CHEEK_L])
         self.ok = self.eyes >= MIN_EYES and self.half2 > 1.0 and float(self.up @ self.up) > 1.0
         self.posed = False
@@ -248,12 +312,14 @@ def _inside(shape: tuple[int, int], dx: int, dy: int) -> np.ndarray:
     return (((ys >= 0) & (ys < h))[:, None] & ((xs >= 0) & (xs < w))[None, :]).astype(np.float32)
 
 
-def _clear_face(out: np.ndarray, pts, mask: np.ndarray, amount: float, keep, force: bool) -> bool:
+def _clear_face(out: np.ndarray, pts, mask: np.ndarray, amount: float, keep, force: bool, full: bool = False) -> bool:
     """One face, changed in place in out. Returns whether anything changed."""
     t = TUNE
     f = _Frame(pts)
     if not f.ok or not (f.posed or force):
         return False
+    if full and force:
+        return _clear_full(out, f, mask, amount, keep)
     h, w = out.shape[:2]
     d = f.eyes
     # The box: the fitted width, lip to nose, and both cheeks, with room for the widest blur.
@@ -324,7 +390,10 @@ def _clear_face(out: np.ndarray, pts, mask: np.ndarray, amount: float, keep, for
             return False
         values = dark[strip]
         there = float(smoother._smoothstep(np.float32(values.mean(dtype=np.float64)), t["there_lo"], t["there_hi"]))
-        there *= 1.0 - float(smoother._smoothstep(np.float32(_percentile(values, 90.0)), t["dense_lo"], t["dense_hi"]))
+        dense = float(smoother._smoothstep(np.float32(_percentile(values, 90.0)), t["dense_lo"], t["dense_hi"]))
+        if full and there > 0.0 and dense > 0.0:
+            return _clear_full(out, f, mask, amount, keep)        # a full one, and asked for: it goes whole, its own way
+        there *= 1.0 - dense
         if there <= 0.0:
             return False
 
@@ -387,18 +456,287 @@ def _clear_face(out: np.ndarray, pts, mask: np.ndarray, amount: float, keep, for
     return True
 
 
-def clear(bgr: np.ndarray, points, mask: np.ndarray, amount: float, keep=None, force: bool = False) -> np.ndarray:
+def _spline(points: np.ndarray, steps: int = 8) -> np.ndarray:
+    """A smooth open curve through the points (Catmull-Rom), both ends included."""
+    p = np.asarray(points, np.float64)
+    q = np.vstack([p[0], p, p[-1]])
+    out = []
+    for i in range(1, len(q) - 2):
+        p0, p1, p2, p3 = q[i - 1], q[i], q[i + 1], q[i + 2]
+        for j in range(steps):
+            s = j / steps
+            out.append(0.5 * ((2.0 * p1) + (p2 - p0) * s + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * s * s
+                              + (3.0 * p1 - p0 - 3.0 * p2 + p3) * s * s * s))
+    out.append(p[-1])
+    return np.array(out)
+
+
+def _fill_in(data: np.ndarray, weight: np.ndarray, radii, unit: float, lo: float, hi: float) -> np.ndarray:
+    """data (h, w, c), known where weight is 1, carried everywhere: the widest radius
+    first, each finer one taking over where enough of what it sees is known."""
+    out = None
+    for r in sorted(radii, reverse=True):
+        seen = smoother._soft_blur(weight, r * unit)
+        here = smoother._soft_blur(data * weight[:, :, None], r * unit) / (seen[:, :, None] + np.float32(1e-6))
+        if out is None:
+            out = here
+        else:
+            c = smoother._smoothstep(seen, lo, hi)[:, :, None]
+            out = out * (1.0 - c) + here * c
+    return out
+
+
+def _grown(seed: np.ndarray, within: np.ndarray) -> np.ndarray:
+    """seed spread through within (both bool), neighbour to neighbour, until it stops."""
+    k = np.ones((3, 3), np.uint8)
+    inside = within.astype(np.uint8)
+    cur = seed.astype(np.uint8) & inside
+    for _ in range(seed.shape[0] + seed.shape[1]):
+        nxt = cv2.dilate(cur, k) & inside
+        if np.array_equal(nxt, cur):
+            break
+        cur = nxt
+    return cur.astype(bool)
+
+
+def _round_kernel(radius: float) -> np.ndarray:
+    r = max(1, int(round(radius)))
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
+def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, keep, seen: dict | None = None) -> bool:
+    """A full moustache on one face, changed in place in out (see the top of the file).
+    Returns whether anything changed. seen, if given, receives what was found on the
+    way (the box, the hair, the replaced area...), for looking at it."""
+    t, hv = TUNE, FULL
+    h, w = out.shape[:2]
+    d = f.eyes
+    # The box: as the thin path's, and further down beside the mouth for the moustache's ends.
+    corners = [f.at(su * t["fit_wide"], v) for su in (-1.0, 1.0) for v in (hv["clear_lo"] - 0.1, 1.2)]
+    xs = [c[0] for c in corners] + [c[0] + s * t["cheek"] * d for c in f.cheeks for s in (-1.0, 1.0)]
+    ys = [c[1] for c in corners] + [c[1] + s * t["cheek"] * d for c in f.cheeks for s in (-1.0, 1.0)]
+    pad = 3.0 * t["meet"] * d + 2.0
+    x0, x1 = max(0, int(math.floor(min(xs) - pad))), min(w, int(math.ceil(max(xs) + pad)) + 1)
+    y0, y1 = max(0, int(math.floor(min(ys) - pad))), min(h, int(math.ceil(max(ys) + pad)) + 1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return False
+    bw, bh = x1 - x0, y1 - y0
+    scale = min(1.0, GRID_EYES / d)
+    gw, gh = (max(8, round(bw * scale)), max(8, round(bh * scale))) if scale < 1.0 else (bw, bh)
+    fx, fy = bw / gw, bh / gh
+    eyes = d / ((fx + fy) / 2.0)
+
+    box = out[y0:y1, x0:x1].astype(np.float32) / np.float32(255.0)
+    box_mask = np.ascontiguousarray(mask[y0:y1, x0:x1], np.float32)
+    small = box if scale >= 1.0 else cv2.resize(box, (gw, gh), interpolation=cv2.INTER_AREA)
+    skin = box_mask if scale >= 1.0 else cv2.resize(box_mask, (gw, gh), interpolation=cv2.INTER_AREA)
+
+    gy, gx = np.mgrid[0:gh, 0:gw].astype(np.float64)
+    px, py = x0 + (gx + 0.5) * fx - 0.5, y0 + (gy + 0.5) * fy - 0.5
+    u, v = f.uv(px, py)
+    au = np.abs(u)
+
+    # The lips, outlined smoothly: here on the copy for the tone, further down at the photo's size for the edge.
+    upper, lower = _spline(f.lips[:len(UPPER)]), _spline(f.lips[len(UPPER):])
+    outline = np.vstack([upper, lower[1:-1]])
+    lips = np.zeros((gh, gw), np.uint8)
+    poly = np.stack([(outline[:, 0] - x0 + 0.5) / fx - 0.5, (outline[:, 1] - y0 + 0.5) / fy - 0.5], axis=1)
+    cv2.fillPoly(lips, [np.round(poly).astype(np.int32)], 255)
+    valid = 1.0 - smoother._soft_blur(lips.astype(np.float32) / np.float32(255.0), max(0.6, t["lip_edge"] * eyes))
+
+    sigma = t["tone"] * eyes
+    tone = smoother._soft_blur(small * valid[:, :, None], sigma) / (smoother._soft_blur(valid, sigma)[:, :, None] + np.float32(1e-4))
+    tone_y = _luma(tone)
+
+    discs = [((px - c[0]) ** 2 + (py - c[1]) ** 2 < (t["cheek"] * d) ** 2) & (skin > 0.9) for c in f.cheeks]
+    if min(int(m.sum()) for m in discs) < 30:
+        return False
+    cheek = (np.median(tone[discs[0]], axis=0) + np.median(tone[discs[1]], axis=0)).astype(np.float32) / np.float32(2.0)
+
+    # A first reading, as the thin path's (the table fitted from above), to find the hair by.
+    fit = (au < t["fit_wide"]) & (v > t["fit_lo"]) & (v < t["fit_hi"]) & (valid > 0.98) & (skin > 0.5)
+    fys, fxs = np.nonzero(fit)
+    if len(fys) < 200:
+        return False
+    step = max(1, len(fys) // t["fit_most"])
+    fys, fxs = fys[::step], fxs[::step]
+    shape_ = _table_at(u, v)
+    a, b = _fit(np.log(np.maximum(tone_y[fys, fxs], 1e-3) / np.maximum(shape_[fys, fxs], 1e-3)), u[fys, fxs])
+    first_y = _luma(_shaded(shape_ * np.exp(np.float32(a) + np.float32(b) * u), cheek))
+    dark = (first_y - tone_y) / (first_y + np.float32(1e-4))
+
+    # How rough the skin is, against the cheeks': strands are rough, shade is not.
+    fine = (_luma(small) - tone_y) * valid
+    at = hv["rough_at"] * eyes
+    rough = np.sqrt(np.maximum(smoother._soft_blur(fine * fine, at), 0.0) / (smoother._soft_blur(valid, at) + np.float32(1e-4)))
+    rough = rough / np.float32(max(float(np.median(rough[discs[0] | discs[1]])), 1e-5))
+
+    # Where: from the dense core, through hair, to its thin ends, within bounds.
+    low = -hv["drop"] * smoother._smoothstep(au, hv["drop_from"], hv["drop_to"])
+    bounds = (au < hv["wide"]) & (v < hv["top"]) & (v > low)
+    on_skin = (valid > 0.5) & (skin > 0.02) & bounds
+    core = (dark > hv["core"]) & (au < hv["core_wide"]) & (v > hv["core_lo"]) & (v < hv["core_hi"]) & on_skin
+    hairy = (((dark > hv["hair_lo"]) & (rough > hv["rough"])) | (dark > hv["hair_hi"])) & on_skin
+    bridge = _round_kernel(hv["bridge"] * eyes)
+    hairy = cv2.morphologyEx(hairy.astype(np.uint8), cv2.MORPH_CLOSE, bridge).astype(bool) & on_skin
+    between = (rough > hv["mid_rough"]) & (au < hv["mid_wide"]) & (v > 0.0) & on_skin
+    region = _grown(core, hairy | between)
+    if not region.any():
+        return False
+    tails = (dark > hv["tail_dark"]) & (rough > hv["tail_rough"]) & on_skin \
+        & (cv2.dilate(region.astype(np.uint8), _round_kernel(hv["tail_reach"] * eyes)) > 0)
+    tails = cv2.morphologyEx(tails.astype(np.uint8), cv2.MORPH_CLOSE, bridge).astype(bool) & on_skin
+    region = _grown(region, region | tails)
+    # The replaced area: the hair and a little past it, soft-edged. The skin mask has the lips cut out
+    # with a hard edge, so the area runs on over them: the lip's own soft edge is applied further down.
+    grow = _round_kernel(hv["grow"] * eyes)
+    paint = np.minimum(smoother._soft_blur(cv2.dilate(region.astype(np.uint8), grow).astype(np.float32), hv["soft"] * eyes)
+                       * np.float32(1.5), np.float32(1.0))
+    paint = paint * np.minimum(smoother._soft_blur(bounds.astype(np.float32), hv["bound_edge"] * eyes) * np.float32(2.0), np.float32(1.0))
+    paint = paint * ((skin > 0.02) | (cv2.dilate(lips, grow) > 0))
+    paint = paint * np.float32(min(1.0, float(amount)))
+    if not float(paint.max()) > 1e-3:
+        return False
+
+    # The tone: the table's shape in the cheeks' colour, matched channel by channel to the clear skin around.
+    e = t["red"]
+    k = np.array([1.0 + e, 1.0 + e, 1.0 - e * (0.701 / 0.299)], np.float32)     # B, G, R: as _shaded's
+    # (the table's shape is rounded first: over a whole lip its creases would show, the one down the middle most)
+    rounded = smoother._soft_blur(shape_, hv["shape_soft"] * eyes)
+    prior = cheek * np.power(np.maximum(rounded, np.float32(1e-3))[:, :, None], k)
+    near_hair = cv2.dilate((region | hairy | (dark > hv["hair_hi"])).astype(np.uint8), _round_kernel(hv["clear_off"] * eyes)) > 0
+    clear_skin = ((valid > 0.98) & (skin > 0.5) & ~near_hair & (au < t["fit_wide"])
+                  & (v > hv["clear_lo"]) & (v < hv["clear_hi"])).astype(np.float32)
+    off = np.log(np.maximum(tone, np.float32(1e-3)) / np.maximum(prior, np.float32(1e-3)))
+    off = np.clip(off, math.log(hv["span"][0]), math.log(hv["span"][1])).astype(np.float32)
+    final = prior * np.exp(_fill_in(off, clear_skin, hv["fill"], eyes, hv["fill_lo"], hv["fill_hi"]))
+    final_y = _luma(final)
+    # Hair goes whatever its tone; the clear skin beside it only ever gets lighter.
+    lift = smoother._smoothstep((final_y - tone_y) / (final_y + np.float32(1e-4)), -t["dark_lo"], t["dark_lo"])
+    lift = np.maximum(lift, np.minimum(smoother._soft_blur(region.astype(np.float32), hv["soft"] * eyes) * np.float32(2.0), np.float32(1.0)))
+    change = (lift[:, :, None] * (final - tone)).astype(np.float32)
+
+    def up(a_: np.ndarray) -> np.ndarray:
+        return a_ if scale >= 1.0 else cv2.resize(a_, (bw, bh), interpolation=cv2.INTER_LINEAR)
+
+    def filled(curve_a: np.ndarray, curve_b: np.ndarray) -> np.ndarray:
+        """1 between two curves that run the same way, at the photo's size."""
+        m_ = np.zeros((bh, bw), np.uint8)
+        cv2.fillPoly(m_, [np.round(np.vstack([curve_a, curve_b[::-1]]) - [x0, y0]).astype(np.int32)], 255)
+        return m_.astype(np.float32) / np.float32(255.0)
+
+    # At the photo's own size: the lip's edge.
+    lips_f = np.zeros((bh, bw), np.uint8)
+    cv2.fillPoly(lips_f, [np.round(outline - [x0, y0]).astype(np.int32)], 255)
+    lips_soft = smoother._soft_blur(lips_f.astype(np.float32) / np.float32(255.0), max(0.6, hv["lip_soft"] * d))
+    ok = 1.0 - lips_soft
+    paint_f = up(paint)
+    hold = None
+    if keep is not None:
+        kx, ky, edit = keep
+        ax0, ay0 = max(x0, kx), max(y0, ky)
+        ax1, ay1 = min(x1, kx + edit.shape[1]), min(y1, ky + edit.shape[0])
+        if ax1 > ax0 and ay1 > ay0:
+            hold = np.ones((bh, bw), np.float32)
+            hold[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] += np.minimum(edit[ay0 - ky:ay1 - ky, ax0 - kx:ax1 - kx], 0.0)
+            paint_f = paint_f * hold
+
+    # The grain: pieces of each cheek's own patch, laid over its half of the lip side by side and
+    # blended into each other, each piece from a different part of the patch. So it never comes
+    # from a fold, the nose or the backdrop, and no piece of cheek shows twice in a row.
+    grain = box - up(tone)
+    grain_y = _luma(grain) * ok
+    usable = (box_mask > 0.9).astype(np.float32) * ok
+    yy, xx = np.mgrid[0:bh, 0:bw].astype(np.float64)
+    near = np.zeros((bh, bw), bool)
+    for c in f.cheeks:
+        near |= (xx + x0 - c[0]) ** 2 + (yy + y0 - c[1]) ** 2 < (t["cheek"] * d) ** 2
+    limit = t["grain_most"] * _percentile(np.abs(grain_y[near & (box_mask > 0.9)]), 25.0)
+    side_of = smoother._smoothstep(up(u), -t["seam"], t["seam"])           # 0: the right cheek's half, 1: the left's
+    wander_x, wander_y = (np.array([w_[i] for w_ in WANDER]) for i in (0, 1))
+    size, wander = hv["tile"] * d, hv["tile_wander"] * d
+    borrowed = np.zeros((bh, bw), np.float32)
+    have = np.zeros((bh, bw), np.float32)
+    for c, side, share in ((f.cheeks[0], -1.0, 1.0 - side_of), (f.cheeks[1], 1.0, side_of)):
+        here = f.centre + side * t["side"] * f.half + t["side_up"] * f.up
+        rx, ry = (xx + x0 - here[0]) / size, (yy + y0 - here[1]) / size
+        total = np.zeros((bh, bw), np.float64)
+        got = np.zeros((bh, bw), np.float64)
+        squares = np.zeros((bh, bw), np.float64)
+        for layer, (ox, oy) in enumerate(((0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5))):     # four layers of pieces, each half a piece along
+            ax, ay = rx + ox, ry + oy
+            nx, ny = np.floor(ax + 0.5), np.floor(ay + 0.5)                 # which piece,
+            qx, qy = ax - nx, ay - ny                                       # and where inside it, -0.5..0.5
+            weight = (np.cos(np.pi * qx) * np.cos(np.pi * qy)) ** 2         # the four layers' weights add up to 1
+            pick = np.mod(nx * 3.0 + ny * 5.0 + layer * 2.0, len(WANDER)).astype(np.int64)
+            sx = np.round(c[0] - x0 + qx * size + wander_x[pick] * wander).astype(np.int64)
+            sy = np.round(c[1] - y0 + qy * size + wander_y[pick] * wander).astype(np.int64)
+            inside = (sx >= 0) & (sx < bw) & (sy >= 0) & (sy < bh)
+            sx, sy = np.clip(sx, 0, bw - 1), np.clip(sy, 0, bh - 1)
+            total += weight * grain_y[sy, sx]
+            got += weight * usable[sy, sx] * inside
+            squares += weight * weight
+        borrowed += share * (total / np.sqrt(np.maximum(squares, 1e-6))).astype(np.float32)   # blended, and as strong as one piece
+        have += share * got.astype(np.float32)
+    borrowed = borrowed * have                         # no skin to borrow from: left smooth
+    borrowed = borrowed * np.minimum(np.float32(1.0), np.float32(limit) / (np.abs(borrowed) + np.float32(1e-6)))
+    new_skin = box + paint_f[:, :, None] * (up(change) + borrowed[:, :, None] - grain)
+
+    # The lip's side of the edge: hair lying over the upper lip takes the lip's own colour, carried
+    # along the lip from where it is clear (as bright as the lip's brighter half: hair only darkens).
+    p = f.inner
+    inner = _spline(p)
+    away = upper - inner
+    away = away / (np.hypot(away[:, 0], away[:, 1])[:, None] + 1e-6)
+    away[:3], away[-3:] = away[len(upper) // 2], away[len(upper) // 2]     # at its corners the lip has no thickness to point along
+    far = upper + away * (4.0 * hv["lip_soft"] * d)
+    box_y = _luma(box)
+    whole = filled(far, inner) * (lips_soft > 0.5)
+    within = filled(upper, inner) > 0.5
+    bright = float(np.median(box_y[within & (box_y > np.median(box_y[within]))])) if within.any() else 0.0
+    known = whole * smoother._smoothstep(box_y / np.float32(max(bright, 1e-3)), hv["lip_keep"][0], hv["lip_keep"][1])
+    if not float(known.sum()) > 10.0:
+        known = whole
+    lip_tone = _fill_in(box, known, hv["lip_fill"], d, hv["fill_lo"], hv["fill_hi"])
+    strand = max(0.6, hv["lip_strand"] * d)
+    on_lip = smoother._smoothstep(1.0 - smoother._soft_blur(box_y, strand) / (_luma(lip_tone) + np.float32(1e-4)),
+                                  hv["lip_dark"][0], hv["lip_dark"][1])
+    band = smoother._soft_blur(filled(far, upper + hv["lip_band"] * (inner - upper)), max(0.6, 0.5 * hv["lip_soft"] * d))
+    beside = np.minimum(smoother._soft_blur(paint_f, hv["lip_reach"] * d) * np.float32(3.0), np.float32(1.0))
+    on_lip = np.minimum(smoother._soft_blur(on_lip * band * beside, strand) * np.float32(1.5), np.float32(1.0))
+    on_lip = on_lip * np.float32(min(1.0, float(amount)))
+    if hold is not None:
+        on_lip = on_lip * hold
+    new_lip = box + on_lip[:, :, None] * (lip_tone + np.float32(hv["lip_grain"]) * borrowed[:, :, None] - box)
+
+    new = new_skin * ok[:, :, None] + new_lip * lips_soft[:, :, None]
+    if seen is not None:
+        seen.update(box=(x0, y0, x1, y1), frame=f, u=u, v=v, dark=dark, rough=rough, hairy=hairy, region=region,
+                    paint=paint, paint_f=paint_f, clear_skin=clear_skin, final=final, prior=prior, tone=tone,
+                    have=have, lips_soft=lips_soft, lips_f=lips_f > 0, on_lip=on_lip, lip_tone=lip_tone, band=band)
+    result = np.clip(new * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    here = out[y0:y1, x0:x1]
+    if np.array_equal(result, here):
+        return False
+    here[:] = result
+    return True
+
+
+def clear(bgr: np.ndarray, points, mask: np.ndarray, amount: float, keep=None, force: bool = False,
+          full: bool = False) -> np.ndarray:
     """bgr (uint8) with a thin moustache taken off each face's upper lip: a new array,
     or bgr itself when nothing changes. points: each face's landmarks or None
     (face_landmarks.landmarks). mask: the smoothing mask (where the skin is). amount:
     0..1, how much of it goes. keep: the brush's Restore edit (x0, y0, float32 -1..1),
     where the lip stays as it is. force: skip the questions whether the face is posed for
-    it and whether there is a moustache (for the parity check, whose photos have neither)."""
+    it and whether there is a moustache (for the parity check, whose photos have neither).
+    full: a full, dense moustache goes too (its own way, _clear_full); without it one is
+    left alone. A thin moustache comes out the same with or without full."""
     if amount <= 0.0 or not points:
         return bgr
     out = bgr.copy()
     changed = False
     for pts in points:
         if pts is not None:
-            changed = _clear_face(out, pts, mask, amount, keep, force) or changed
+            changed = _clear_face(out, pts, mask, amount, keep, force, full) or changed
     return out if changed else bgr

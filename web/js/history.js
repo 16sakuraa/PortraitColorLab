@@ -16,8 +16,8 @@ import { t, onLangChange } from './i18n.js';
 
 const MAX_ENTRIES = 300;   // the oldest changes (after Photo opened) drop off beyond this
 // The settings recorded, by element id, with the word for each; sliders show their
-// value in a label beside them.
-const FIELDS = [
+// value in a label beside them. A page without a setting's control leaves it out.
+const ALL_FIELDS = [
   { id: 'look', key: 'ctl.look' },
   { id: 'blemish', key: 'ctl.blemish', shows: 'bval' },
   { id: 'strength', key: 'ctl.strength', shows: 'sval' },
@@ -29,6 +29,7 @@ const FIELDS = [
   { id: 'strays', key: 'ctl.strays', shows: 'hval' },
   { id: 'level', key: 'ctl.level', shows: 'lval' },
   { id: 'lip', key: 'ctl.lip', shows: 'mval' },
+  { id: 'lipfull', key: 'ctl.lipFull' },
   { id: 'lighting', key: 'ctl.lighting' },
   { id: 'print', key: 'ctl.print' },
   { id: 'faceonly', key: 'ctl.faceOnly' },
@@ -67,6 +68,7 @@ export function attachHistory({ host, brush, render }) {
   const hint = el('p', { className: 'history-hint' });
   host.append(el('div', { className: 'history' }, el('div', { className: 'history-row' }, undoBtn, redoBtn), list, hint));
 
+  const FIELDS = ALL_FIELDS.filter((f) => $(f.id));
   let entries = [], now = -1, applying = false;
 
   const read = () => Object.fromEntries(FIELDS.map(({ id }) => {

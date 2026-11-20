@@ -88,7 +88,7 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
 // params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1, shine: 0..1 (optional),
 // print: 'large' | 'small', lighting: 'soft' | 'hard', eyes: 0..1, tone: 0..1 and strays: 0..1
 // (optional, look.js's under-eyes, skin tone and stray hairs), lip: 0..1 (optional, lip.js's thin
-// moustache; lipForce skips its question whether there is one), level: 0..1 (optional, straighten
+// moustache; lipFull takes a full one too; lipForce skips its questions), level: 0..1 (optional, straighten
 // the head; left out while wantMask is set), strokes (optional, the brush's) }.
 // The parity tool passes grain and light (numbers) instead of print and lighting.
 // The analysis already holds the strokes' mask edits (withEdits); the heal and spot
@@ -97,10 +97,10 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
 export function render(bgr, analysis, params) {
   const { cv } = state;
   const spotless = blemish.apply(cv, bgr, analysis.corr, params.blemish);
-  // A thin moustache, if asked for: before the healing brush, so its strokes go on top,
-  // and not where the brush's Restore says to leave the photo alone.
+  // A thin moustache, if asked for (and a full one, if that is asked for too): before the healing
+  // brush, so its strokes go on top, and not where the brush's Restore says to leave the photo alone.
   const filled = lip.clear(cv, spotless, analysis.points, analysis.mask, params.lip ?? 0, analysis.restored ?? null,
-    params.lipForce ?? false);
+    params.lipForce ?? false, params.lipFull ?? false);
   if (filled !== spotless) spotless.delete();
   const healed = heal.apply(cv, filled, params.strokes);
   if (healed !== filled) filled.delete();

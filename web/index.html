@@ -32,6 +32,7 @@
   select:disabled { opacity: .45; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
+  .ctl label.check { justify-content: flex-start; }
   button { font: inherit; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--accent);
            color: var(--accent-text); cursor: pointer; }
   button.secondary { background: var(--secondary); }
@@ -191,6 +192,7 @@
     <div class="ctl">
       <label for="lip" data-i18n-title="ctl.lipTitle" title="Takes a thin moustache, or its shadow, off the upper lip: the skin there is replaced, with the cheeks' own grain, not just lightened. For a portrait taken straight on with the mouth closed, as for an ID photo: a smiling or turned face is left alone, and so are a bare lip and a full moustache. A beard stays, so leave this off for a face with one. A mole right above the lip goes with the hair: bring it back with the brush's Restore."><span data-i18n="ctl.lip">Thin moustache</span> <span id="mval">0</span></label>
       <input id="lip" type="range" min="0" max="100" value="0" disabled>
+      <label class="check" data-i18n-title="ctl.lipFullTitle" title="Takes a full, dense moustache off too, following it out to its ends; the Thin moustache slider says how much of it goes. Tick it for the photo that needs it: it is switched off again for every new photo. A moustache that runs into a beard still shows."><input id="lipfull" type="checkbox" disabled> <span data-i18n="ctl.lipFull">Also a full moustache</span></label>
     </div>
     <p class="note" data-i18n="note.step3">Bring back sharpness around the eyes, nostrils and jawline with Undo smoothing, cover scars with Heal, and click leftover spots away with Remove spot. Then press Download.</p>
   </section>
