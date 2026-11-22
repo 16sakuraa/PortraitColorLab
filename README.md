@@ -116,6 +116,14 @@ Model sources and licences are in `THIRD_PARTY_NOTICES.md`.
   above the lip goes with it, and the brush's Restore brings it back. Off by default.
   Ticking **Also a full moustache** under the slider takes a full one off too: the
   hair is followed to its ends, and the box is switched off again for every new photo.
+- **Chin beard:** a tick box that takes a beard off the
+  chin: a sparse goatee, straggly chin hair, a tuft under the lip. The skin is put in
+  anew as for the moustache, and the jaw's line is continued under where the hair was.
+  It acts on the same kind of face, leaves a bare chin as it is, and leaves stubble or a
+  beard across the jaw alone: a clean patch cut out of it would show. The shadow under
+  the chin can come out a little shallower than it was, single hairs away from the beard
+  stay (the brush takes them), and a mole inside the beard goes with it (Restore brings
+  it back). Off by default, and switched off again for every new photo.
 - **Straighten head:** turns a tilted head upright, by the share of its tilt you set.
   Everything above the jaw turns as one piece and the turn fades out down the neck, so
   the shoulders and clothes stay where they are. Nothing is made up and the face keeps

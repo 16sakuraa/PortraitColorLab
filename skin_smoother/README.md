@@ -11,7 +11,8 @@ no external service, nothing taken from the original program.
 2. **Removes blemishes:** finds small red marks and fills them from the skin around
    them. Optionally (`lip.py`) takes a **thin moustache** off the upper lip, replacing
    it with the tone of a bare lip and the cheeks' grain, on a face straight on with
-   its mouth closed; a bare lip and a full moustache are left alone.
+   its mouth closed; a bare lip and a full moustache are left alone. Optionally
+   (`chin.py`) takes a **beard off the chin** the same way.
 3. **Edge-preserving smoothing** flattens blotches and uneven tone, sized to the
    face and reading only from skin. **Lighting** set to hard light reaches the
    mottled light and shadow that flash leaves, and still keeps the face's shading;
@@ -58,7 +59,7 @@ use Back and Next at the bottom of the panel:
 **Look**, above the steps, sets several of these at once: Natural (how the app opens)
 or Studio ID photo. Moving a setting afterwards shows the look as Custom.
 
-3. **Finish:** Straighten head, Tidy stray hairs, Thin moustache, and **Undo smoothing**, **Restore**,
+3. **Finish:** Straighten head, Tidy stray hairs, Thin moustache, Chin beard, and **Undo smoothing**, **Restore**,
    **Heal** and **Remove spot**.
 
 Everything is redone from the original photo each time, so you can go back to an
@@ -188,6 +189,12 @@ python app.py
   Ticking **Also a full moustache** under it takes a full, dense
   one off too, following it to its ends; the box is switched off again for every new
   photo, and a moustache that runs into a beard still shows.
+- **Chin beard** (a tick box) takes a beard off the chin:
+  a sparse goatee, straggly chin hair, a tuft under the lip. The skin is replaced as the
+  moustache's is, and the jaw keeps its line. Same kind of face as the moustache; a bare
+  chin is left as it is, and so is stubble or a beard across the jaw. Single hairs away
+  from the beard stay (the brush takes them), and a mole inside it goes with it (Restore
+  brings it back). Switched off again for every new photo.
 - **Straighten head** turns a tilted head upright by the share set (0 = off).
 - **Balance skin tone** brings a face much darker or brighter than most part of the
   way back to the middle of the range (0 = off).
@@ -258,7 +265,11 @@ the mottled light and shadow of flash photos. `--under-eyes`, `--skin-tone`,
 `--stray-hairs`, `--straighten` and `--moustache` (0..1, off by default) even the skin under the eyes,
 balance skin brightness, tidy stray hairs around the head, turn a tilted head upright and take a thin
 moustache off the upper lip. With `--moustache`, `--full-moustache` takes a full, dense one too
-(the page's Also a full moustache box; it is left alone otherwise, and one that runs into a beard still shows). The Studio
+(the page's Also a full moustache box; it is left alone otherwise, and one that runs into a beard still shows).
+`--chin-beard` (the page's Chin beard box) takes a beard off the chin: a sparse goatee,
+straggly chin hair, a tuft under the lip. It acts on the same kind of face as the moustache step
+and leaves stubble or a beard across the jaw alone; it runs after the moustache step, so the
+two can be asked for together. The Studio
 ID photo look is `--strength 0.8 --texture 0.75 --lighting hard --print-size small
 --skin-tone 1`. `--face-only` leaves
 out the neck and other body skin. If no output path is given, it writes

@@ -73,6 +73,7 @@ const params = () => ({
   strays: +$('strays').value / 100,
   lip: +$('lip').value / 100,
   lipFull: $('lipfull').checked,
+  chin: $('chin').checked,
   level: +$('level').value / 100,
   pores: +$('pores').value / 100,
   print: $('print').value,
@@ -83,7 +84,7 @@ const params = () => ({
 });
 
 function setControls(enabled) {
-  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'strays', 'level', 'lip', 'lipfull', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
+  for (const id of ['look', 'blemish', 'strength', 'texture', 'shine', 'eyes', 'tone', 'pores', 'strays', 'level', 'lip', 'lipfull', 'chin', 'lighting', 'print', 'faceonly', 'editmask', 'download']) $(id).disabled = !enabled;
 }
 
 let summary = () => '', opened = null;
@@ -137,7 +138,8 @@ worker.onmessage = ({ data }) => {
       setControls(true);
       opened = data;
       describe(data);
-      $('lipfull').checked = false;     // a full moustache is a choice made for each photo
+      $('lipfull').checked = false;     // a full moustache is a choice made for each photo,
+      $('chin').checked = false;        // and so is a chin beard
       history.start();
       requestRender();
       break;
@@ -210,6 +212,7 @@ $('lipfull').addEventListener('input', () => {
   if ($('lipfull').checked && +$('lip').value === 0) { $('lip').value = 100; $('mval').textContent = '100'; }
 });
 $('lipfull').addEventListener('change', scheduleRender);
+$('chin').addEventListener('change', scheduleRender);
 $('print').addEventListener('change', scheduleRender);
 $('lighting').addEventListener('change', scheduleRender);
 

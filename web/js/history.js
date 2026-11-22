@@ -30,6 +30,7 @@ const ALL_FIELDS = [
   { id: 'level', key: 'ctl.level', shows: 'lval' },
   { id: 'lip', key: 'ctl.lip', shows: 'mval' },
   { id: 'lipfull', key: 'ctl.lipFull' },
+  { id: 'chin', key: 'ctl.chin' },
   { id: 'lighting', key: 'ctl.lighting' },
   { id: 'print', key: 'ctl.print' },
   { id: 'faceonly', key: 'ctl.faceOnly' },

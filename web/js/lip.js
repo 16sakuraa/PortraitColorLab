@@ -8,7 +8,11 @@
 // (clearFull, the desktop's _clear_full): the hair is followed from its dense core to its
 // thin ends, the tone is matched to the clear skin around the whole moustache, the grain
 // is laid in blended pieces of each cheek, and the lip's edge is drawn as a smooth curve
-// at the photo's own size, with the lip's own colour put over hair lying on the lip.
+// at the photo's own size, with the lip's own colour put over hair lying on the lip. The
+// philtrum is too narrow for the table: it is put in by itself (PHILTRUM: the groove down
+// the lip's own middle and the light either side of it under the nose), an average one
+// made somewhat stronger. Skin is replaced in the moustache and wherever strands are
+// beside it; the rest of the area stays as it is.
 // The tone is worked out on a copy of the mouth at one fixed size, and only the grain
 // (and a full moustache's lip edge) at the photo's own size, so a preview and the
 // full-size photo come out alike.
@@ -18,7 +22,7 @@ import { pyRound } from './skinmask.js';
 import { softBlur, smoothstep, medianOf } from './smooth.js';
 
 // Face Mesh points.
-const UPPER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
+export const UPPER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
 const LOWER = [291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61];
 const MOUTH_R = 61, MOUTH_L = 291, LIP_TOP = 0, NOSE_BASE = 2, CHEEK_R = 205, CHEEK_L = 425;
 const LIP_INNER_TOP = 13, LIP_INNER_FOOT = 14;      // where the lips meet: apart when the mouth is open
@@ -26,7 +30,8 @@ const LIP_INNER = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];   // where
 // Same limits as lip.POSE: a face the step acts on is straight on, mouth closed, not smiling broadly.
 export const POSE = { turn: 0.07, open: 0.09, smile: 1.0, short: 0.16 };
 const EYE_R = [33, 133], EYE_L = [263, 362];
-const GRID_EYES = 160, MIN_EYES = 24;
+export const GRID_EYES = 160;
+const MIN_EYES = 24;
 const LUMA_B = 0.114, LUMA_G = 0.587, LUMA_R = 0.299;
 const f = Math.fround;
 
@@ -66,7 +71,33 @@ export const FULL = {
   tile: 0.12, tile_wander: 0.07,
   lip_soft: 0.012, lip_band: 0.6, lip_dark: [0.06, 0.14], lip_strand: 0.006, lip_reach: 0.04,
   lip_fill: [0.16, 0.08, 0.04], lip_keep: [0.80, 0.92], lip_grain: 0.7,
+  // The philtrum (PHILTRUM, below) is put in at this many times the average bare lip's,
+  philtrum: 1.6,
+  // and its lights (under the nose, either side of the groove) at this many times;
+  philtrum_light: 3.0,
+  // it fades out between these distances from the lip's own middle (u), where the table takes over again.
+  philtrum_to: [0.45, 0.6],
+  strand_at: 0.03, strand: 3.0, strand_span: [0.04, 0.08], own_soft: 0.012, own_at: 0.02, own: [0.02, 0.08],
 };
+// Same table as lip.PHILTRUM: the philtrum of a bare upper lip, brightness by place, in percent
+// against the lip's level beside it at the same height. Rows: from the lip's edge up to the nose's
+// base (the eleventh) and just past it, in tenths. Columns: from the lip's own middle outwards in
+// steps of 0.05 (u), to 0.6.
+const PHILTRUM = [
+  [-6.3, -5.8, -4.9, -3.5, -2.1, -0.5, +0.6, -0.4, -0.7, -0.5, +0.1, +0.4, -0.0],
+  [-6.3, -5.8, -4.9, -3.5, -2.1, -0.5, +0.6, -0.4, -0.7, -0.5, +0.1, +0.4, -0.0],
+  [-9.2, -8.4, -6.7, -5.1, -3.3, -1.8, -0.9, -0.6, -0.6, -0.3, -0.0, +0.2, +0.2],
+  [-8.8, -7.8, -6.2, -4.5, -3.4, -2.5, -1.4, -0.8, -0.8, -0.5, -0.0, +0.2, +0.4],
+  [-7.0, -6.1, -4.7, -3.5, -3.0, -2.1, -1.2, -0.9, -0.7, -0.5, -0.1, +0.3, +0.3],
+  [-5.4, -4.5, -3.3, -2.5, -2.1, -1.4, -0.7, -0.7, -0.6, -0.3, -0.1, +0.1, +0.3],
+  [-4.1, -3.5, -2.5, -1.8, -1.5, -0.9, -0.5, -0.3, -0.3, -0.3, -0.1, +0.1, +0.4],
+  [-3.6, -2.9, -1.7, -1.4, -1.2, -0.6, -0.3, -0.3, -0.4, -0.3, -0.1, +0.0, +0.4],
+  [-2.7, -2.1, -1.0, -0.6, -0.4, +0.0, +0.2, +0.1, -0.2, -0.4, -0.2, +0.1, +0.5],
+  [-1.8, -1.4, -0.5, +0.2, +0.6, +1.1, +1.2, +0.9, +0.3, -0.2, -0.3, -0.0, +0.5],
+  [-1.2, -0.8, +0.3, +1.5, +2.6, +3.4, +3.5, +2.7, +1.3, +0.1, -0.4, -0.3, +0.6],
+  [+0.6, +1.3, +2.6, +3.7, +5.0, +6.4, +6.3, +4.4, +1.7, -0.4, -1.0, -0.4, +1.7],
+].map((row) => row.map(f));
+const PHILTRUM_U = 0.05, PHILTRUM_V = 0.1;
 // Same as lip.WANDER: where in the cheek's patch each piece of grain comes from.
 const WANDER = [[0.0, 0.0], [0.62, 0.31], [-0.45, 0.58], [0.21, -0.71], [-0.68, -0.29], [0.55, -0.52], [-0.18, 0.83],
   [0.85, -0.05], [-0.32, -0.80], [-0.90, 0.20], [0.30, 0.75]];
@@ -74,7 +105,7 @@ const WANDER = [[0.0, 0.0], [0.62, 0.31], [-0.45, 0.58], [0.21, -0.71], [-0.68, 
 const as32 = (table) => Object.fromEntries(Object.entries(table).filter(([, value]) => typeof value === 'number').map(([name, value]) => [name, f(value)]));
 const TUNE32 = as32(TUNE), FULL32 = as32(FULL);
 
-function blurred(cv, data, w, h, channels, sigma) {
+export function blurred(cv, data, w, h, channels, sigma) {
   const src = cv.matFromArray(h, w, channels === 3 ? cv.CV_32FC3 : cv.CV_32F, data);
   const dst = softBlur(cv, src, sigma);
   const out = new Float32Array(dst.data32F);
@@ -82,7 +113,7 @@ function blurred(cv, data, w, h, channels, sigma) {
   return out;
 }
 
-function resized(cv, data, w, h, channels, tw, th, how) {
+export function resized(cv, data, w, h, channels, tw, th, how) {
   const src = cv.matFromArray(h, w, channels === 3 ? cv.CV_32FC3 : cv.CV_32F, data), dst = new cv.Mat();
   cv.resize(src, dst, new cv.Size(tw, th), 0, 0, how);
   const out = new Float32Array(dst.data32F);
@@ -133,6 +164,8 @@ export function frameOf(pts) {
     const nx = nose[0] + u * half[0], ny = nose[1] + u * half[1];
     return [ex + v * (nx - ex), ey + v * (ny - ey)];
   };
+  // Across (u): the lip's top point, the nose's base. The lip's own middle runs from one to the other.
+  const mid = [top, nose].map((p) => ((p[0] - centre[0]) * half[0] + (p[1] - centre[1]) * half[1]) / Math.max(half2, 1e-9));
   const ok = eyes >= MIN_EYES && half2 > 1 && up[0] * up[0] + up[1] * up[1] > 1;
   let posed = false;
   if (ok) {
@@ -143,7 +176,7 @@ export function frameOf(pts) {
       && Math.hypot(up[0], up[1]) / eyes >= POSE.short;
   }
   return {
-    eyes, centre, half, up, uv, place, lips: [...UPPER, ...LOWER].map(at), inner: LIP_INNER.map(at),
+    eyes, centre, half, up, mid, uv, place, lips: [...UPPER, ...LOWER].map(at), inner: LIP_INNER.map(at),
     cheeks: [at(CHEEK_R), at(CHEEK_L)], ok, posed,
   };
 }
@@ -404,14 +437,14 @@ function clearFace(cv, out, pts, mask, amount, keep, force, full = false) {
 
 // smoothstep as numpy works it out on float32 values: here the result is cut into yes and
 // no further on, so it has to come out the same on both sides.
-function step32(x, lo, hi) {
+export function step32(x, lo, hi) {
   let s = f(f(x - f(lo)) / f(hi - lo));
   s = s < 0 ? 0 : s > 1 ? 1 : s;
   return f(f(s * s) * f(3 - f(2 * s)));
 }
 
 // A smooth open curve through the points (Catmull-Rom), both ends included (lip._spline).
-function spline(points, steps = 8) {
+export function spline(points, steps = 8) {
   const n = points.length, q = [points[0], ...points, points[n - 1]], out = [];
   for (let i = 1; i < q.length - 2; i++) {
     const p0 = q[i - 1], p1 = q[i], p2 = q[i + 1], p3 = q[i + 2];
@@ -426,7 +459,7 @@ function spline(points, steps = 8) {
 }
 
 // 255 inside the polygon through these points, rounded as numpy rounds, on a grid w by h (bytes).
-function polygon(cv, points, w, h) {
+export function polygon(cv, points, w, h) {
   const mat = cv.Mat.zeros(h, w, cv.CV_8U);
   const m = cv.matFromArray(points.length, 1, cv.CV_32SC2, points.flatMap((p) => [pyRound(p[0]), pyRound(p[1])])), polys = new cv.MatVector();
   polys.push_back(m);
@@ -436,13 +469,13 @@ function polygon(cv, points, w, h) {
   return out;
 }
 
-const roundKernel = (cv, radius) => {
+export const roundKernel = (cv, radius) => {
   const r = Math.max(1, pyRound(radius));
   return cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(2 * r + 1, 2 * r + 1));
 };
 
 // Bytes grown by the kernel, or with gaps smaller than it closed.
-function morphed(cv, data, w, h, kernel, close = false) {
+export function morphed(cv, data, w, h, kernel, close = false) {
   const src = cv.matFromArray(h, w, cv.CV_8U, data), dst = new cv.Mat();
   if (close) cv.morphologyEx(src, dst, cv.MORPH_CLOSE, kernel);
   else cv.dilate(src, dst, kernel);
@@ -453,7 +486,7 @@ function morphed(cv, data, w, h, kernel, close = false) {
 
 // seed spread through within (both 0 or 1), neighbour to neighbour, all eight, until it
 // stops, or after as many rounds as the desktop's takes at most (lip._grown).
-function grown(seed, within, w, h) {
+export function grown(seed, within, w, h) {
   const out = new Uint8Array(w * h);
   let edge = [];
   for (let i = 0; i < w * h; i++) if (seed[i] && within[i]) { out[i] = 1; edge.push(i); }
@@ -507,6 +540,46 @@ function pieces(n, first, origin, size, shift) {
   return { piece, inside, wave };
 }
 const LAYERS = [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5]];     // four layers of pieces, each half a piece along
+
+// Grain for new skin, at the photo's own size (lip._pieces): pieces of each cheek's own patch, laid side
+// by side and blended into each other, each piece from a different part of the patch. grainY, usable: the
+// box's grain (brightness) and where it is skin to borrow from, bw by bh; x0, y0: the box's corner in the
+// photo. For each cheek (its middle, in the photo): heres, where the middle of its first piece lies.
+// sideOf: how much of each pixel's grain is the second cheek's (the rest is the first's). size: a
+// piece's; wander: how far from the cheek's middle a piece may be taken; limit: the most a pixel's grain
+// may be. Returns the grain and how much of it had skin behind it.
+export function grainPieces(grainY, usable, bw, bh, x0, y0, cheeks, heres, sideOf, size, wander, limit) {
+  const bn = bw * bh, borrowed = new Float32Array(bn), have = new Float32Array(bn);
+  cheeks.forEach((c, k) => {
+    const [hx, hy] = heres[k];
+    const total = new Float64Array(bn), got = new Float64Array(bn), squares = new Float64Array(bn);
+    LAYERS.forEach(([ox, oy], layer) => {
+      const across = pieces(bw, x0, hx, size, ox), down = pieces(bh, y0, hy, size, oy);
+      for (let y = 0, i = 0; y < bh; y++) {
+        for (let x = 0; x < bw; x++, i++) {
+          const weight = (across.wave[x] * down.wave[y]) ** 2;
+          const turn = (across.piece[x] * 3.0 + down.piece[y] * 5.0 + layer * 2.0) % WANDER.length, pick = turn < 0 ? turn + WANDER.length : turn;
+          const sx = pyRound(c[0] - x0 + across.inside[x] * size + WANDER[pick][0] * wander);
+          const sy = pyRound(c[1] - y0 + down.inside[y] * size + WANDER[pick][1] * wander);
+          const j = Math.min(bh - 1, Math.max(0, sy)) * bw + Math.min(bw - 1, Math.max(0, sx));
+          total[i] += weight * grainY[j];
+          if (sx >= 0 && sx < bw && sy >= 0 && sy < bh) got[i] += weight * usable[j];
+          squares[i] += weight * weight;
+        }
+      }
+    });
+    for (let i = 0; i < bn; i++) {
+      const share = k === 0 ? f(1 - sideOf[i]) : sideOf[i];
+      borrowed[i] = f(borrowed[i] + f(share * f(total[i] / Math.sqrt(Math.max(squares[i], 1e-6)))));   // blended, and as strong as one piece
+      have[i] = f(have[i] + f(share * f(got[i])));
+    }
+  });
+  for (let i = 0; i < bn; i++) {
+    const g = f(borrowed[i] * have[i]);                         // no skin to borrow from: left smooth
+    borrowed[i] = f(g * Math.min(1, f(limit / f(Math.abs(g) + f(1e-6)))));
+  }
+  return { borrowed, have };
+}
 
 // A full moustache on one face (a frameOf), changed in place in the Mat out: the desktop's
 // lip._clear_full, step by step. Returns whether anything changed. seen, if given,
@@ -674,9 +747,29 @@ export function clearFull(cv, out, fr, mask, amount, keep, seen = null) {
   // The tone: the table's shape in the cheeks' colour, matched channel by channel to the clear skin around.
   // (the table's shape is rounded first: over a whole lip its creases would show, the one down the middle most)
   const prior = new Float32Array(3 * gn), final = new Float32Array(3 * gn), change = new Float32Array(3 * gn);
-  const clearSkin = new Float32Array(gn);
+  const clearSkin = new Float32Array(gn), strands = new Float32Array(gn), hairs = new Float32Array(gn);
   {
-    const rounded = blurred(cv, shape, gw, gh, 1, hv.shape_soft * eyes);
+    // (and the philtrum is put in by itself, about the lip's own middle: the table's broad dip there is
+    // taken out first, by reading the table no nearer the middle than where the philtrum's map ends)
+    const flat = new Float32Array(gn), marks = new Float32Array(gn);
+    {
+      const first = f(fr.mid[0]), lean = f(fr.mid[1] - fr.mid[0]), from = f(hv.philtrum_to[0]);
+      const rows = PHILTRUM.length, cols = PHILTRUM[0].length, across = f(PHILTRUM_U), up_ = f(PHILTRUM_V);
+      const darks = f(hv.philtrum), lights = f(hv.philtrum_light);
+      for (let i = 0; i < gn; i++) {
+        const held = v[i] < 0 ? 0 : v[i] > 1 ? 1 : v[i];
+        const middle = f(first + f(lean * held)), aside = Math.abs(f(u[i] - middle));
+        flat[i] = tableAt(f(middle + (u[i] < middle ? -1.0 : 1.0) * Math.max(aside, from)), v[i]);
+        const a_ = Math.min(Math.max(f(aside / across), 0), cols - 1), b_ = Math.min(Math.max(f(v[i] / up_), 0), rows - 1);
+        const a0 = Math.min(Math.floor(a_), cols - 2), b0 = Math.min(Math.floor(b_), rows - 2), fa = f(a_ - a0), fb = f(b_ - b0);
+        const top = f(f(PHILTRUM[b0][a0] * f(1 - fa)) + f(PHILTRUM[b0][a0 + 1] * fa));
+        const low = f(f(PHILTRUM[b0 + 1][a0] * f(1 - fa)) + f(PHILTRUM[b0 + 1][a0 + 1] * fa));
+        const mark = f(f(f(top * f(1 - fb)) + f(low * fb)) * f(1 - step32(aside, hv.philtrum_to[0], hv.philtrum_to[1])));
+        marks[i] = f((mark > 0 ? lights : darks) * mark);
+      }
+    }
+    const rounded = blurred(cv, flat, gw, gh, 1, hv.shape_soft * eyes), percent = f(0.01);
+    for (let i = 0; i < gn; i++) rounded[i] = f(rounded[i] * f(1 + f(percent * marks[i])));
     const off = roundKernel(cv, hv.clear_off * eyes), hair = new Uint8Array(gn);
     for (let i = 0; i < gn; i++) hair[i] = region[i] || hairy[i] || dark[i] > h32.hair_hi ? 1 : 0;
     const nearHair = morphed(cv, hair, gw, gh, off);
@@ -700,6 +793,26 @@ export function clearFull(cv, out, fr, mask, amount, keep, seen = null) {
       // Hair goes whatever its tone; the clear skin beside it only ever gets lighter.
       const lift = Math.max(step32(f(f(finalY - toneY[i]) / f(finalY + tiny)), -t.dark_lo, t.dark_lo), Math.min(f(hairSoft[i] * 2), 1));
       for (let ch = 0; ch < 3; ch++) change[3 * i + ch] = f(lift * f(final[3 * i + ch] - tone[3 * i + ch]));
+    }
+    // Clear skin is left as it is. A strand is darker than the skin around it; skin is replaced in the
+    // moustache itself and, beside it, wherever strands are. The rest of the area the moustache was grown
+    // by keeps the photo's own tone and grain, so a crease beside the mouth or the nose stays.
+    const bright = new Float32Array(gn), brightOk = new Float32Array(gn);
+    for (let i = 0; i < gn; i++) { bright[i] = luma(small, 3 * i); brightOk[i] = f(bright[i] * valid[i]); }
+    const size = hv.strand_at * eyes, sum = blurred(cv, brightOk, gw, gh, 1, size), share = blurred(cv, valid, gw, gh, 1, size);
+    const rel = new Float32Array(gn), own = [];
+    for (let i = 0; i < gn; i++) {
+      const around = f(sum[i] / f(share[i] + tiny));
+      rel[i] = f(f(bright[i] - around) / f(around + tiny));
+      if (onCheek[i]) own.push(rel[i]);
+    }
+    const usual = f(medianOf(own)), spread = f(medianOf(own.map((r) => Math.abs(f(r - usual)))));      // the cheeks' own grain, robustly
+    const darker = f(-Math.min(Math.max(hv.strand * 1.4826 * spread, hv.strand_span[0]), hv.strand_span[1]));
+    for (let i = 0; i < gn; i++) strands[i] = (rel[i] < darker || dark[i] > h32.hair_hi) && valid[i] > 0.5 ? 1 : 0;
+    const ownSoft = blurred(cv, Float32Array.from(region), gw, gh, 1, hv.own_soft * eyes), beside = blurred(cv, strands, gw, gh, 1, hv.own_at * eyes);
+    for (let i = 0; i < gn; i++) {
+      hairs[i] = Math.max(Math.min(f(ownSoft[i] * 2), 1), step32(beside[i], hv.own[0], hv.own[1]));
+      paint[i] = f(paint[i] * hairs[i]);
     }
   }
 
@@ -738,36 +851,10 @@ export function clearFull(cv, out, fr, mask, amount, keep, seen = null) {
     }
   }
   const limit = f(t.grain_most * percentile(quiet, 25));
-  const size = hv.tile * d, wander = hv.tile_wander * d, borrowed = new Float32Array(bn), have = new Float32Array(bn);
-  fr.cheeks.forEach((c, k) => {
-    const side = k === 0 ? -1 : 1;
-    const hx = fr.centre[0] + side * t.side * fr.half[0] + t.side_up * fr.up[0], hy = fr.centre[1] + side * t.side * fr.half[1] + t.side_up * fr.up[1];
-    const total = new Float64Array(bn), got = new Float64Array(bn), squares = new Float64Array(bn);
-    LAYERS.forEach(([ox, oy], layer) => {
-      const across = pieces(bw, x0, hx, size, ox), down = pieces(bh, y0, hy, size, oy);
-      for (let y = 0, i = 0; y < bh; y++) {
-        for (let x = 0; x < bw; x++, i++) {
-          const weight = (across.wave[x] * down.wave[y]) ** 2;
-          const turn = (across.piece[x] * 3.0 + down.piece[y] * 5.0 + layer * 2.0) % WANDER.length, pick = turn < 0 ? turn + WANDER.length : turn;
-          const sx = pyRound(c[0] - x0 + across.inside[x] * size + WANDER[pick][0] * wander);
-          const sy = pyRound(c[1] - y0 + down.inside[y] * size + WANDER[pick][1] * wander);
-          const j = Math.min(bh - 1, Math.max(0, sy)) * bw + Math.min(bw - 1, Math.max(0, sx));
-          total[i] += weight * grainY[j];
-          if (sx >= 0 && sx < bw && sy >= 0 && sy < bh) got[i] += weight * usable[j];
-          squares[i] += weight * weight;
-        }
-      }
-    });
-    for (let i = 0; i < bn; i++) {
-      const sideOf = step32(uUp[i], -t.seam, t.seam), share = k === 0 ? f(1 - sideOf) : sideOf;       // 0: the right cheek's half, 1: the left's
-      borrowed[i] = f(borrowed[i] + f(share * f(total[i] / Math.sqrt(Math.max(squares[i], 1e-6)))));   // blended, and as strong as one piece
-      have[i] = f(have[i] + f(share * f(got[i])));
-    }
-  });
-  for (let i = 0; i < bn; i++) {
-    const g = f(borrowed[i] * have[i]);                         // no skin to borrow from: left smooth
-    borrowed[i] = f(g * Math.min(1, f(limit / f(Math.abs(g) + f(1e-6)))));
-  }
+  const sideOf = Float32Array.from(uUp, (across) => step32(across, -t.seam, t.seam));      // 0: the right cheek's half, 1: the left's
+  const { borrowed, have } = grainPieces(grainY, usable, bw, bh, x0, y0, fr.cheeks,
+    [-1, 1].map((side) => [fr.centre[0] + side * t.side * fr.half[0] + t.side_up * fr.up[0], fr.centre[1] + side * t.side * fr.half[1] + t.side_up * fr.up[1]]),
+    sideOf, hv.tile * d, hv.tile_wander * d, limit);
 
   // The lip's side of the edge: hair lying over the upper lip takes the lip's own colour, carried
   // along the lip from where it is clear (as bright as the lip's brighter half: hair only darkens).
@@ -815,7 +902,7 @@ export function clearFull(cv, out, fr, mask, amount, keep, seen = null) {
   if (seen) {
     Object.assign(seen, {
       box: [x0, y0, x1, y1], grid: [gw, gh], u, v, dark, rough, hairy, region, paint, paintFull, clearSkin, final, prior, tone,
-      have, lipsSoft, lipsFull, onLip, lipTone, band,
+      strands, hairs, have, lipsSoft, lipsFull, onLip, lipTone, band,
     });
   }
   let changed = false;

@@ -40,7 +40,13 @@ its own way through the same engine (_clear_full):
            says it is hair.
   tone     Most of the lip is under hair, so the table's shape is matched, colour
            channel by channel, to the clear skin around the whole moustache and carried
-           inwards from there, wide where no clear skin is near.
+           inwards from there, wide where no clear skin is near. The philtrum is
+           too narrow for the table: it is put in by itself (PHILTRUM: the groove down
+           the lip's own middle, deepest just above the lip, and the light either side
+           of it under the nose), somewhat stronger than the average bare lip's. It is
+           an average philtrum, not this face's own, which the hair hides.
+  beside   Skin is replaced in the moustache and wherever strands are beside it; the
+           rest of the area it was grown by is clear skin and stays as the photo has it.
   grain    Pieces of each cheek's own patch, laid side by side and blended, each from a
            different part of the patch: a copy moved this far would run into the nose
            or a fold.
@@ -185,7 +191,41 @@ FULL = {
     "lip_fill": (0.16, 0.08, 0.04),       # the lip's tone is carried along the lip at these radii,
     "lip_keep": (0.80, 0.92),             # from the lip that is this bright against its brighter half (the rest may be hair)
     "lip_grain": 0.7,      # the new lip gets this share of the skin's grain, so it is not flat
+    # The philtrum (PHILTRUM, below): put in at this many times the average bare lip's, since an average of
+    # faces is flatter than any one of them (a quarter of bare lips are deeper than 1.35 times it), out to
+    # where the table takes over again.
+    "philtrum": 1.6,
+    "philtrum_light": 3.0,  # its lights (what is brighter than the lip beside it: under the nose, either side of the groove) at this many times
+    "philtrum_to": (0.45, 0.6),
+    # Clear skin is left as it is: inside the replaced area, skin is replaced only where there is hair.
+    "strand_at": 0.03,     # A strand is darker than the skin around it within this radius,
+    "strand": 3.0,         # by this many times the cheeks' own grain,
+    "strand_span": (0.04, 0.08),          # held between these shares.
+    "own_soft": 0.012,     # The moustache itself has this soft an edge.
+    "own_at": 0.02,        # Outside it the photo stays as it is
+    "own": (0.02, 0.08),   # where less than this share of pixels within that radius is hair.
 }
+# The philtrum of a bare upper lip: brightness by place, in percent against the lip's level beside it at the
+# same height. Rows: from the lip's edge (first) up to the nose's base (the eleventh) and just past it, in
+# tenths. Columns: from the lip's own middle outwards in steps of 0.05 (u), to 0.6. The groove is deepest
+# just above the lip and fades towards the nose; under the nose the skin either side of it is lighter
+# (the light under the nostrils). The average of retouched portraits with a bare lip, both sides mirrored
+# together: the table's steps (TABLE_U) are four times too wide for it.
+PHILTRUM = np.array([
+    (-6.3, -5.8, -4.9, -3.5, -2.1, -0.5, +0.6, -0.4, -0.7, -0.5, +0.1, +0.4, -0.0),
+    (-6.3, -5.8, -4.9, -3.5, -2.1, -0.5, +0.6, -0.4, -0.7, -0.5, +0.1, +0.4, -0.0),
+    (-9.2, -8.4, -6.7, -5.1, -3.3, -1.8, -0.9, -0.6, -0.6, -0.3, -0.0, +0.2, +0.2),
+    (-8.8, -7.8, -6.2, -4.5, -3.4, -2.5, -1.4, -0.8, -0.8, -0.5, -0.0, +0.2, +0.4),
+    (-7.0, -6.1, -4.7, -3.5, -3.0, -2.1, -1.2, -0.9, -0.7, -0.5, -0.1, +0.3, +0.3),
+    (-5.4, -4.5, -3.3, -2.5, -2.1, -1.4, -0.7, -0.7, -0.6, -0.3, -0.1, +0.1, +0.3),
+    (-4.1, -3.5, -2.5, -1.8, -1.5, -0.9, -0.5, -0.3, -0.3, -0.3, -0.1, +0.1, +0.4),
+    (-3.6, -2.9, -1.7, -1.4, -1.2, -0.6, -0.3, -0.3, -0.4, -0.3, -0.1, +0.0, +0.4),
+    (-2.7, -2.1, -1.0, -0.6, -0.4, +0.0, +0.2, +0.1, -0.2, -0.4, -0.2, +0.1, +0.5),
+    (-1.8, -1.4, -0.5, +0.2, +0.6, +1.1, +1.2, +0.9, +0.3, -0.2, -0.3, -0.0, +0.5),
+    (-1.2, -0.8, +0.3, +1.5, +2.6, +3.4, +3.5, +2.7, +1.3, +0.1, -0.4, -0.3, +0.6),
+    (+0.6, +1.3, +2.6, +3.7, +5.0, +6.4, +6.3, +4.4, +1.7, -0.4, -1.0, -0.4, +1.7),
+], np.float32)
+PHILTRUM_U, PHILTRUM_V = 0.05, 0.1
 # Where in the cheek's patch each piece of grain comes from (shares of tile_wander, across and down).
 WANDER = ((0.0, 0.0), (0.62, 0.31), (-0.45, 0.58), (0.21, -0.71), (-0.68, -0.29), (0.55, -0.52), (-0.18, 0.83),
           (0.85, -0.05), (-0.32, -0.80), (-0.90, 0.20), (0.30, 0.75))
@@ -220,6 +260,7 @@ class _Frame:
         self.half = (p[MOUTH_L] - p[MOUTH_R]) / 2.0
         self.half2 = float(self.half @ self.half)
         self.nose = p[NOSE_BASE]
+        self.mid = tuple(float((p[i] - self.centre) @ self.half) / max(self.half2, 1e-9) for i in (LIP_TOP, NOSE_BASE))    # across (u): the lip's top point, the nose's base
         self.up = p[NOSE_BASE] - p[LIP_TOP]
         edge = p[list(UPPER)]
         across = (edge - self.centre) @ self.half / max(self.half2, 1e-9)
@@ -504,6 +545,44 @@ def _round_kernel(radius: float) -> np.ndarray:
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
+def _pieces(grain_y: np.ndarray, usable: np.ndarray, x0: int, y0: int, cheeks, heres, shares, size: float, wander: float,
+            limit: float) -> tuple[np.ndarray, np.ndarray]:
+    """Grain for new skin, at the photo's own size: pieces of each cheek's own patch, laid side by side and
+    blended into each other, each piece from a different part of the patch. grain_y, usable: the box's grain
+    (brightness) and where it is skin to borrow from; x0, y0: the box's corner in the photo. For each cheek
+    (its middle, in the photo): heres, where the middle of its first piece lies, and shares, how much of
+    each pixel's grain is that cheek's. size: a piece's; wander: how far from the cheek's middle a piece may
+    be taken; limit: the most a pixel's grain may be. Returns the grain and how much of it had skin behind it."""
+    bh, bw = grain_y.shape
+    yy, xx = np.mgrid[0:bh, 0:bw].astype(np.float64)
+    wander_x, wander_y = (np.array([w_[i] for w_ in WANDER]) for i in (0, 1))
+    borrowed = np.zeros((bh, bw), np.float32)
+    have = np.zeros((bh, bw), np.float32)
+    for c, here, share in zip(cheeks, heres, shares):
+        rx, ry = (xx + x0 - here[0]) / size, (yy + y0 - here[1]) / size
+        total = np.zeros((bh, bw), np.float64)
+        got = np.zeros((bh, bw), np.float64)
+        squares = np.zeros((bh, bw), np.float64)
+        for layer, (ox, oy) in enumerate(((0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5))):     # four layers of pieces, each half a piece along
+            ax, ay = rx + ox, ry + oy
+            nx, ny = np.floor(ax + 0.5), np.floor(ay + 0.5)                 # which piece,
+            qx, qy = ax - nx, ay - ny                                       # and where inside it, -0.5..0.5
+            weight = (np.cos(np.pi * qx) * np.cos(np.pi * qy)) ** 2         # the four layers' weights add up to 1
+            pick = np.mod(nx * 3.0 + ny * 5.0 + layer * 2.0, len(WANDER)).astype(np.int64)
+            sx = np.round(c[0] - x0 + qx * size + wander_x[pick] * wander).astype(np.int64)
+            sy = np.round(c[1] - y0 + qy * size + wander_y[pick] * wander).astype(np.int64)
+            inside = (sx >= 0) & (sx < bw) & (sy >= 0) & (sy < bh)
+            sx, sy = np.clip(sx, 0, bw - 1), np.clip(sy, 0, bh - 1)
+            total += weight * grain_y[sy, sx]
+            got += weight * usable[sy, sx] * inside
+            squares += weight * weight
+        borrowed += share * (total / np.sqrt(np.maximum(squares, 1e-6))).astype(np.float32)   # blended, and as strong as one piece
+        have += share * got.astype(np.float32)
+    borrowed = borrowed * have                         # no skin to borrow from: left smooth
+    borrowed = borrowed * np.minimum(np.float32(1.0), np.float32(limit) / (np.abs(borrowed) + np.float32(1e-6)))
+    return borrowed, have
+
+
 def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, keep, seen: dict | None = None) -> bool:
     """A full moustache on one face, changed in place in out (see the top of the file).
     Returns whether anything changed. seen, if given, receives what was found on the
@@ -602,7 +681,22 @@ def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, kee
     e = t["red"]
     k = np.array([1.0 + e, 1.0 + e, 1.0 - e * (0.701 / 0.299)], np.float32)     # B, G, R: as _shaded's
     # (the table's shape is rounded first: over a whole lip its creases would show, the one down the middle most)
-    rounded = smoother._soft_blur(shape_, hv["shape_soft"] * eyes)
+    # (and the philtrum is put in by itself, about the lip's own middle: the table's broad dip there is
+    # taken out first, by reading the table no nearer the middle than where the philtrum's map ends)
+    middle = f.mid[0] + (f.mid[1] - f.mid[0]) * np.clip(v, 0.0, 1.0)
+    aside = np.abs(u - middle)
+    beside = middle + np.where(u < middle, -1.0, 1.0) * np.maximum(aside, np.float32(hv["philtrum_to"][0]))
+    rounded = smoother._soft_blur(_table_at(beside.astype(np.float32), v), hv["shape_soft"] * eyes)
+    rows_, cols_ = PHILTRUM.shape
+    a_ = np.clip(aside / PHILTRUM_U, 0.0, cols_ - 1.0)
+    b_ = np.clip(v / PHILTRUM_V, 0.0, rows_ - 1.0)
+    a0, b0 = np.minimum(np.floor(a_).astype(np.int64), cols_ - 2), np.minimum(np.floor(b_).astype(np.int64), rows_ - 2)
+    fa, fb = (a_ - a0).astype(np.float32), (b_ - b0).astype(np.float32)
+    marks = (PHILTRUM[b0, a0] * (1.0 - fa) + PHILTRUM[b0, a0 + 1] * fa) * (1.0 - fb) \
+        + (PHILTRUM[b0 + 1, a0] * (1.0 - fa) + PHILTRUM[b0 + 1, a0 + 1] * fa) * fb
+    marks = marks * (1.0 - smoother._smoothstep(aside, hv["philtrum_to"][0], hv["philtrum_to"][1]))
+    marks = np.where(marks > 0.0, np.float32(hv["philtrum_light"]), np.float32(hv["philtrum"])) * marks
+    rounded = (rounded * (1.0 + np.float32(0.01) * marks)).astype(np.float32)
     prior = cheek * np.power(np.maximum(rounded, np.float32(1e-3))[:, :, None], k)
     near_hair = cv2.dilate((region | hairy | (dark > hv["hair_hi"])).astype(np.uint8), _round_kernel(hv["clear_off"] * eyes)) > 0
     clear_skin = ((valid > 0.98) & (skin > 0.5) & ~near_hair & (au < t["fit_wide"])
@@ -611,6 +705,19 @@ def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, kee
     off = np.clip(off, math.log(hv["span"][0]), math.log(hv["span"][1])).astype(np.float32)
     final = prior * np.exp(_fill_in(off, clear_skin, hv["fill"], eyes, hv["fill_lo"], hv["fill_hi"]))
     final_y = _luma(final)
+    # Clear skin is left as it is. A strand is darker than the skin around it; skin is replaced in the
+    # moustache itself and, beside it, wherever strands are. The rest of the area the moustache was grown
+    # by keeps the photo's own tone and grain, so a crease beside the mouth or the nose stays.
+    y_small = _luma(small)
+    at = hv["strand_at"] * eyes
+    around = smoother._soft_blur(y_small * valid, at) / (smoother._soft_blur(valid, at) + np.float32(1e-4))
+    rel = (y_small - around) / (around + np.float32(1e-4))
+    own = rel[discs[0] | discs[1]]
+    limit = min(max(hv["strand"] * 1.4826 * float(np.median(np.abs(own - np.median(own)))), hv["strand_span"][0]), hv["strand_span"][1])
+    strand = ((rel < -limit) | (dark > hv["hair_hi"])) & (valid > 0.5)
+    hairs = np.maximum(np.minimum(smoother._soft_blur(region.astype(np.float32), hv["own_soft"] * eyes) * np.float32(2.0), np.float32(1.0)),
+                       smoother._smoothstep(smoother._soft_blur(strand.astype(np.float32), hv["own_at"] * eyes), hv["own"][0], hv["own"][1]))
+    paint = paint * hairs
     # Hair goes whatever its tone; the clear skin beside it only ever gets lighter.
     lift = smoother._smoothstep((final_y - tone_y) / (final_y + np.float32(1e-4)), -t["dark_lo"], t["dark_lo"])
     lift = np.maximum(lift, np.minimum(smoother._soft_blur(region.astype(np.float32), hv["soft"] * eyes) * np.float32(2.0), np.float32(1.0)))
@@ -653,33 +760,8 @@ def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, kee
         near |= (xx + x0 - c[0]) ** 2 + (yy + y0 - c[1]) ** 2 < (t["cheek"] * d) ** 2
     limit = t["grain_most"] * _percentile(np.abs(grain_y[near & (box_mask > 0.9)]), 25.0)
     side_of = smoother._smoothstep(up(u), -t["seam"], t["seam"])           # 0: the right cheek's half, 1: the left's
-    wander_x, wander_y = (np.array([w_[i] for w_ in WANDER]) for i in (0, 1))
-    size, wander = hv["tile"] * d, hv["tile_wander"] * d
-    borrowed = np.zeros((bh, bw), np.float32)
-    have = np.zeros((bh, bw), np.float32)
-    for c, side, share in ((f.cheeks[0], -1.0, 1.0 - side_of), (f.cheeks[1], 1.0, side_of)):
-        here = f.centre + side * t["side"] * f.half + t["side_up"] * f.up
-        rx, ry = (xx + x0 - here[0]) / size, (yy + y0 - here[1]) / size
-        total = np.zeros((bh, bw), np.float64)
-        got = np.zeros((bh, bw), np.float64)
-        squares = np.zeros((bh, bw), np.float64)
-        for layer, (ox, oy) in enumerate(((0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5))):     # four layers of pieces, each half a piece along
-            ax, ay = rx + ox, ry + oy
-            nx, ny = np.floor(ax + 0.5), np.floor(ay + 0.5)                 # which piece,
-            qx, qy = ax - nx, ay - ny                                       # and where inside it, -0.5..0.5
-            weight = (np.cos(np.pi * qx) * np.cos(np.pi * qy)) ** 2         # the four layers' weights add up to 1
-            pick = np.mod(nx * 3.0 + ny * 5.0 + layer * 2.0, len(WANDER)).astype(np.int64)
-            sx = np.round(c[0] - x0 + qx * size + wander_x[pick] * wander).astype(np.int64)
-            sy = np.round(c[1] - y0 + qy * size + wander_y[pick] * wander).astype(np.int64)
-            inside = (sx >= 0) & (sx < bw) & (sy >= 0) & (sy < bh)
-            sx, sy = np.clip(sx, 0, bw - 1), np.clip(sy, 0, bh - 1)
-            total += weight * grain_y[sy, sx]
-            got += weight * usable[sy, sx] * inside
-            squares += weight * weight
-        borrowed += share * (total / np.sqrt(np.maximum(squares, 1e-6))).astype(np.float32)   # blended, and as strong as one piece
-        have += share * got.astype(np.float32)
-    borrowed = borrowed * have                         # no skin to borrow from: left smooth
-    borrowed = borrowed * np.minimum(np.float32(1.0), np.float32(limit) / (np.abs(borrowed) + np.float32(1e-6)))
+    borrowed, have = _pieces(grain_y, usable, x0, y0, f.cheeks, [f.centre + side * t["side"] * f.half + t["side_up"] * f.up for side in (-1.0, 1.0)],
+                             (1.0 - side_of, side_of), hv["tile"] * d, hv["tile_wander"] * d, limit)
     new_skin = box + paint_f[:, :, None] * (up(change) + borrowed[:, :, None] - grain)
 
     # The lip's side of the edge: hair lying over the upper lip takes the lip's own colour, carried
@@ -713,6 +795,7 @@ def _clear_full(out: np.ndarray, f: _Frame, mask: np.ndarray, amount: float, kee
     if seen is not None:
         seen.update(box=(x0, y0, x1, y1), frame=f, u=u, v=v, dark=dark, rough=rough, hairy=hairy, region=region,
                     paint=paint, paint_f=paint_f, clear_skin=clear_skin, final=final, prior=prior, tone=tone,
+                    strand=strand, hairs=hairs,
                     have=have, lips_soft=lips_soft, lips_f=lips_f > 0, on_lip=on_lip, lip_tone=lip_tone, band=band)
     result = np.clip(new * 255.0 + 0.5, 0, 255).astype(np.uint8)
     here = out[y0:y1, x0:x1]

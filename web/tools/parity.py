@@ -34,6 +34,9 @@ Stages compared, all with Remove blemishes = 1, Strength = 0.6, Keep texture
   lipfull    as lip, with a full moustache asked for too, so every face goes the full
              moustache's way (a face with nothing dark enough above its lip to start
              from comes out as final)          PSNR, % of pixels that differ
+  chin       after smoothing, with Chin beard, told not to ask whether the face is posed
+             for it (these photos have no beard: it acts where shadows give it a core,
+             and elsewhere comes out as final)  PSNR, % of pixels that differ
              (the faces' measured brightness is compared too, and the skin area the
              tone goes by, with Face only, is added to the worst mask difference)
 PSNR above ~45 dB is invisible; "identical" means every pixel matches. A mean
@@ -61,6 +64,7 @@ import blemish   # noqa: E402
 import heal      # noqa: E402
 import look      # noqa: E402
 import lip       # noqa: E402
+import chin      # noqa: E402
 import mask_edit  # noqa: E402
 
 PARAMS = {"blemish": 1.0, "strength": 0.6, "texture": 0.6, "pores": 0.0}
@@ -166,6 +170,9 @@ def ref() -> None:
         cv2.imwrite(os.path.join(REF, n + ".lipfull.png"),
                     smoother.smooth_face(lip.clear(healed, points, mask, 1.0, force=True, full=True), PARAMS["strength"],
                                          PARAMS["texture"], mask, faces, PARAMS["pores"]))
+        cv2.imwrite(os.path.join(REF, n + ".chin.png"),
+                    smoother.smooth_face(chin.clear(healed, points, mask, 1.0, force=True), PARAMS["strength"], PARAMS["texture"],
+                                         mask, faces, PARAMS["pores"]))
         mask.astype(np.float32).tofile(os.path.join(REF, n + ".mask.f32"))
         brushed_mask.astype(np.float32).tofile(os.path.join(REF, n + ".mask_brush.f32"))
         cv2.imwrite(os.path.join(REF, n + ".healed.png"), healed)
@@ -194,7 +201,7 @@ def compare() -> int:
     worst_mask = 0.0
     print(f"{'image':10s} {'mask max/mean diff':>20s} {'face only':>20s} {'healed':>24s} {'final':>24s} {'pores':>24s} "
           f"{'small':>24s} {'shine':>24s} {'hard':>24s} {'brush':>24s} {'heal':>24s} {'look':>24s} {'tone':>24s} "
-          f"{'strays':>24s} {'level':>24s} {'lip':>24s} {'lipfull':>24s}")
+          f"{'strays':>24s} {'level':>24s} {'lip':>24s} {'lipfull':>24s} {'chin':>24s}")
     with open(os.path.join(REF, "params.json")) as fh:
         saved = json.load(fh)
     lumas, brights = saved.get("lumas", {}), saved.get("brights", {})
@@ -230,7 +237,7 @@ def compare() -> int:
         for a, b in zip(ours, theirs):
             if a is not None and b is not None:
                 worst_luma = max(worst_luma, max(abs(x - y) for x, y in zip(a, b)))
-        for stage in ("healed", "final", "pores", "small", "shine", "hard", "brush", "heal", "look", "tone", "strays", "level", "lip", "lipfull"):
+        for stage in ("healed", "final", "pores", "small", "shine", "hard", "brush", "heal", "look", "tone", "strays", "level", "lip", "lipfull", "chin"):
             a = cv2.imread(os.path.join(REF, f"{n}.{stage}.png"))
             b = cv2.imread(os.path.join(OUT, f"{n}.{stage}.png"))
             p = _psnr(a, b)
@@ -240,7 +247,7 @@ def compare() -> int:
                 worst = min(worst, p)
         print(f"{n:10s} {cells[0]:>20s} {cells[1]:>20s} {cells[2]:>24s} {cells[3]:>24s} {cells[4]:>24s} "
               f"{cells[5]:>24s} {cells[6]:>24s} {cells[7]:>24s} {cells[8]:>24s} {cells[9]:>24s} "
-              f"{cells[10]:>24s} {cells[11]:>24s} {cells[12]:>24s} {cells[13]:>24s} {cells[14]:>24s} {cells[15]:>24s}")
+              f"{cells[10]:>24s} {cells[11]:>24s} {cells[12]:>24s} {cells[13]:>24s} {cells[14]:>24s} {cells[15]:>24s} {cells[16]:>24s}")
     print(f"worst smoothing-stage PSNR: {worst:.1f} dB; worst mean mask difference: {worst_mask:.5f}; "
           f"worst difference in a face's brightness or its brighter skin's colour: {worst_luma:.6f}")
     return 0

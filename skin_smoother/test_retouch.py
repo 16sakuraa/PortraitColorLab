@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import smoother  # noqa: E402
 import blemish  # noqa: E402
 import blemish_classic  # noqa: E402
+import chin  # noqa: E402
 import heal  # noqa: E402
 import lip  # noqa: E402
 import look  # noqa: E402
@@ -1987,8 +1988,14 @@ def test_thai_and_english_have_the_same_words_and_every_word_used_exists():
     fields = re.findall(r"\{ id: '(\w+)', key: '([\w.]+)'", read("js", "history.js"))
     assert len(fields) > 8 and {key for _, key in fields} <= set(en), "History's names for the settings"
     assert all(f'id="{i}"' in serve.PAGE for i, _ in fields), "on the desktop app's page"
-    assert all(f'id="{i}"' in read("index.html") for i, _ in fields), "and on the web page"
-    assert "lipfull" in [i for i, _ in fields], "a full moustache's box is a setting on both"
+    desktop_only = set()                # settings the browser has no step for: none
+    assert all(f'id="{i}"' in read("index.html") for i, _ in fields if i not in desktop_only), "and on the web page"
+    assert not any(f'id="{i}"' in read("index.html") for i in desktop_only), "which has none of the desktop's own"
+    assert {"lipfull", "chin"} <= {i for i, _ in fields}, "a full moustache's box and a chin beard's are settings on both"
+    assert "chin: $('chin').checked" in serve.PAGE and 'payload.get("chin", False)' in open(serve.__file__, encoding="utf-8").read(), \
+        "ticked, it reaches the step on the desktop"
+    assert "chin: $('chin').checked" in read("js", "app.js") and "params.chin ? chin.clear(" in read("js", "pipeline.js"), \
+        "and in the browser"
     used = set(re.findall(r'data-i18n(?:-html|-title|-alt|-aria)?="([\w.]+)"', pages))
     used |= set(re.findall(r"\bt\('([\w.]+)'", scripts))
     for m in ("protect", "unsmooth", "skin", "heal", "spot", "light", "line", "resmooth", "removeSkin"):
@@ -2259,6 +2266,43 @@ def test_a_full_moustache_goes_at_other_sizes():
         assert abs(after) < 0.15 * before, f"at {size}x, left of the moustache: {after:.3f} of {before:.3f}"
 
 
+def test_a_full_moustache_leaves_a_philtrum():
+    img, pts, mask, band = lip_face(0.6)
+    out = lip.clear(img, [pts], mask, 1.0, full=True)
+    assert out is not img
+    y = cv2.GaussianBlur(cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 2.0)
+    u, v = lip._Frame(pts).uv(*np.meshgrid(np.arange(1000.0), np.arange(900.0)))
+    rows = (v > 0.3) & (v < 0.7)
+    middle, beside = float(y[rows & (np.abs(u) < 0.05)].mean()), float(y[rows & (np.abs(u) > 0.3) & (np.abs(u) < 0.4)].mean())
+    drawn = cv2.GaussianBlur(cv2.cvtColor(lip_face(0.0)[0], cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 2.0)
+    flat = float(drawn[rows & (np.abs(u) < 0.05)].mean()) / float(drawn[rows & (np.abs(u) > 0.3) & (np.abs(u) < 0.4)].mean())
+    assert 0.03 < flat - middle / beside < 0.14, f"a groove down the middle of the new lip: {middle / beside:.3f} against {flat:.3f} on the drawn bare lip"
+    low = (v > 0.15) & (v < 0.35) & (np.abs(u) < 0.05)
+    assert float(y[low].mean()) < middle - 1.0, "deepest just above the lip"
+    rows_, cols_ = lip.PHILTRUM.shape
+    assert (rows_, cols_) == (12, 13) and abs(lip.PHILTRUM_U * (cols_ - 1) - 0.6) < 1e-9 and abs(lip.PHILTRUM_V * (rows_ - 1) - 1.1) < 1e-9
+    assert float(lip.PHILTRUM[1:8, 0].max()) < -3.0 and int(lip.PHILTRUM[:, 0].argmin()) in (2, 3), "the groove: down the middle, deepest just above the lip"
+    assert float(np.abs(lip.PHILTRUM[1:9, 9:]).max()) < 1.0, "none of it by 0.45 from the middle"
+    assert float(lip.PHILTRUM[10, 4:8].min()) > 2.0 > float(lip.PHILTRUM[10, 0]), "under the nose, light either side of the groove"
+    assert lip.FULL["philtrum_light"] >= lip.FULL["philtrum"] >= 1.0
+    assert max(abs(m) for m in lip._Frame(pts).mid) < 1e-6, "down the lip's own middle (here the mouth's)"
+    aside = pts.copy()
+    aside[[0, 2]] += (14.0, 0.0)                                # the lip's top point and the nose's base 0.2 (u) to one side
+    assert all(abs(m - 0.2) < 1e-6 for m in lip._Frame(aside).mid)
+
+
+def test_a_full_moustache_leaves_clear_skin_beside_it_alone():
+    img, pts, mask, band = lip_face(0.6)
+    out = lip.clear(img, [pts], mask, 1.0, full=True)
+    hair = (band > 0.02).astype(np.uint8)
+    near = cv2.dilate(hair, np.ones((3, 3), np.uint8), iterations=10) > 0        # within 0.055 eye distances of the moustache
+    ring = near & ~(cv2.dilate(hair, np.ones((3, 3), np.uint8), iterations=4) > 0) & (mask > 0.99)
+    moved = np.abs(out.astype(np.int16) - img).max(axis=2)
+    assert ring.sum() > 2000 and float((moved[ring] <= 1).mean()) > 0.75, \
+        f"skin with no hair on it, 4 to 10 px from the moustache, is mostly as it was (0.66 of it before this was built): {float((moved[ring] <= 1).mean()):.2f} of it"
+    assert float((moved[band > 0.9] > 6).mean()) > 0.5, "while the moustache itself is replaced"
+
+
 def test_the_moustache_step_is_for_a_face_straight_on_with_its_mouth_closed():
     img, pts, mask, band = lip_face()
     assert lip.clear(img, [pts], mask, 1.0) is not img
@@ -2336,6 +2380,190 @@ def test_moustache_helpers():
     known[:, :5] = known[:, 35:] = 1.0                      # known at both sides: 1 on the left, 0 on the right
     carried = lip._fill_in(data, known, (0.4, 0.1), 40.0, 0.02, 0.2)[:, :, 0]
     assert carried[20, 2] > 0.9 and carried[20, 37] < 0.1 and 0.2 < carried[20, 20] < 0.8, "carried in from where it is known"
+
+
+def chin_face(beard: float = 0.45, size: float = 1.0, seed: int = 5, wide: float = 0.7, edge: float = 7.0):
+    """A drawn face from the mouth down, 1000 x 900 at size 1: (photo, landmarks, smoothing mask, the beard's
+    own map 0..1). The chin is shaded as a bare chin is (chin.TABLE, so with the jaw's edge and the shadow
+    under it); beard darkens strands that run down the chin, inside a band across the jaw's edge, by that
+    share. wide: how far across the band goes (1 = under the mouth's corners). edge: the jaw's own sharp edge
+    lies this many pixels (at size 1) above the landmarks' outline, as a photo's does."""
+    h, w = round(900 * size), round(1000 * size)
+    pts = np.zeros((face_landmarks.POINTS, 2), np.float64)
+    place = {33: (380, 350), 133: (440, 350), 362: (560, 350), 263: (620, 350), 2: (500, 540), 205: (390, 500), 425: (610, 500),
+             61: (430, 620), 185: (445, 612), 40: (462, 606), 39: (478, 602), 37: (490, 599), 0: (500, 600), 267: (510, 599),
+             269: (522, 602), 270: (538, 606), 409: (555, 612), 291: (570, 620), 375: (555, 632), 321: (538, 640),
+             405: (522, 646), 314: (510, 649), 17: (500, 650), 84: (490, 649), 181: (478, 646), 91: (462, 640), 146: (445, 632),
+             13: (500, 623), 14: (500, 625),
+             78: (436, 620), 191: (447, 621), 80: (462, 622), 81: (478, 623), 82: (490, 623), 312: (510, 623), 311: (522, 623),
+             310: (538, 622), 415: (553, 621), 308: (564, 620),
+             136: (385, 688), 150: (410, 705), 149: (435, 720), 176: (458, 731), 148: (480, 738), 152: (500, 740),
+             377: (520, 738), 400: (542, 731), 378: (565, 720), 379: (590, 705), 365: (615, 688)}
+    for i, xy in place.items():
+        pts[i] = np.array(xy, np.float64) * size
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    frame = chin._Frame(pts)
+    u, v = frame.uv(xx, yy)
+    under = ((v - 1.0) * (frame.jaw(u) - frame.top(u)) + edge * size).astype(np.float32)       # px below the jaw's own edge
+    u, v = u.astype(np.float32), v.astype(np.float32)
+    near = smoother._smoothstep(2.3 - np.abs(u), 0.0, 0.5) * smoother._smoothstep(v + 0.3, 0.0, 0.3)
+    bare = (1.0 + near * (chin._table_at(u, v) / 0.9 - 1.0)) * (1.0 - 0.14 * near * smoother._smoothstep(under, -1.5 * size, 1.5 * size))
+    band = smoother._smoothstep(wide - np.abs(u), 0.0, 0.15) * smoother._smoothstep(v, 0.5, 0.6) * smoother._smoothstep(1.2 - v, 0.0, 0.1)
+    lines = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), sigmaX=max(0.6, 0.9 * size), sigmaY=7.0 * size)
+    strands = (lines > 0.9 * float(lines.std())).astype(np.float32)
+    tone = (0.72 + 0.04 * np.sin(xx / (170 * size))) * bare * (1.0 - beard * band * strands) \
+        + cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), max(0.5, 0.7 * size)) * 0.012
+    img = np.clip(np.dstack([tone * 0.62, tone * 0.76, tone]) * 255.0, 0, 255).astype(np.uint8)
+    lips = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(lips, [np.round(pts[list(lip.UPPER + lip.LOWER)]).astype(np.int32)], 255)
+    img[lips > 0] = (90, 80, 190)
+    mask = 1.0 - cv2.GaussianBlur(lips.astype(np.float32) / 255.0, (0, 0), 1.0)
+    return img, pts, mask.astype(np.float32), band.astype(np.float32)
+
+
+def test_no_chin_step_without_an_amount_or_a_face():
+    img, pts, mask, band = chin_face()
+    assert chin.clear(img, [pts], mask, 0.0) is img
+    assert chin.clear(img, [], mask, 1.0) is img and chin.clear(img, [None], mask, 1.0) is img
+    tiny = pts * (lip.MIN_EYES * 0.9 / 180.0)
+    assert chin.clear(img, [tiny], mask, 1.0) is img, "a face too small to judge is left alone"
+
+
+def test_a_chin_beard_is_replaced_and_the_rest_stays():
+    img, pts, mask, band = chin_face()
+    bare = chin_face(0.0)[0]
+    where = band > 0.9
+    before = darkness(img, bare, where)
+    out = chin.clear(img, [pts], mask, 1.0)
+    after = darkness(out, bare, where)
+    assert before > 0.06, f"the drawn beard should be dark: {before:.3f}"
+    assert abs(after) < 0.25 * before, f"left of the beard: {after:.3f} of {before:.3f}"
+    grain = lambda a: (cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                       - cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 3.0))
+    cheeks = np.zeros(img.shape[:2], bool)
+    cheeks[480:520, 370:410] = cheeks[480:520, 590:630] = True
+    new, own = float(grain(out)[where].std()), float(grain(bare)[cheeks].std())
+    assert 0.5 * own < new < 2.0 * own, f"the new skin has the cheeks' grain, neither none nor the strands': {new:.2f} against {own:.2f}"
+    lips = np.zeros(img.shape[:2], np.uint8)
+    cv2.fillPoly(lips, [np.round(pts[list(lip.UPPER + lip.LOWER)]).astype(np.int32)], 255)
+    inside = cv2.erode(lips, np.ones((9, 9), np.uint8)) > 0
+    assert np.array_equal(out[inside], img[inside]), "the lips are not touched"
+    far = cv2.erode((band < 1e-6).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
+    assert np.abs(out[far].astype(np.int16) - img[far]).max() <= 2, "nor is the skin away from the beard"
+    assert not np.array_equal(out, img) and np.array_equal(out, chin.clear(img, [pts], mask, 1.0)), "the same every time"
+
+
+def test_a_bare_chin_is_left_as_it_is():
+    for seed in (5, 6, 7):
+        bare, pts, mask, band = chin_face(0.0, seed=seed)
+        assert chin.clear(bare, [pts], mask, 1.0) is bare, "a bare chin has nothing to remove"
+
+
+def test_the_jaw_keeps_its_edge_under_the_beard():
+    img, pts, mask, band = chin_face()
+    bare = chin_face(0.0)[0]
+    out = chin.clear(img, [pts], mask, 1.0)
+    y = lambda a: cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 2.0)
+    column = lambda a: y(a)[690:790, 480:520].mean(axis=1)             # down the middle of the chin, across the jaw's edge
+    step = lambda c_: float((c_[:-8] - c_[8:]).max())                  # the most brightness lost over 8 rows
+    place = lambda c_: int(np.argmax(c_[:-8] - c_[8:]))
+    was, now = column(bare), column(out)
+    assert step(now) > 0.7 * step(was), f"the edge is still an edge: {step(now):.1f} against {step(was):.1f}"
+    assert abs(place(now) - place(was)) <= 3, f"and where it was: {place(now)} against {place(was)}"
+    seen = {}
+    assert chin._clear_face(img.copy(), pts, mask, 1.0, None, False, seen)
+    assert seen["edge"]["moved"] and abs(seen["edge"]["middle"] * 180.0 + 7.0) < 2.0,         f"the frame was moved onto the photo's own edge, 7 px above the outline: {seen['edge']}"
+
+
+def test_a_beard_across_the_jaw_is_left_alone():
+    img, pts, mask, band = chin_face(wide=2.2)                         # strands on past the bounds on both sides
+    assert chin.clear(img, [pts], mask, 1.0) is img, "a clean patch cut out of it would show"
+    assert chin.clear(img, [pts], mask, 1.0, force=True) is not img, "the parity check skips the question"
+
+
+def test_the_chin_step_is_for_a_face_straight_on_with_its_mouth_closed():
+    img, pts, mask, band = chin_face()
+    assert chin.clear(img, [pts], mask, 1.0) is not img
+    turned = pts.copy()
+    turned[2] += (20.0, 0.0)                                           # the nose well to one side of the middle of the eyes
+    assert chin.clear(img, [turned], mask, 1.0) is img, "a turned head"
+    open_mouth = pts.copy()
+    open_mouth[14] += (0.0, 25.0)
+    assert chin.clear(img, [open_mouth], mask, 1.0) is img, "an open mouth"
+    short = pts.copy()
+    short[list(chin.JAW)] -= (0.0, 40.0)                               # the chin's point 0.28 eye distances under the lip: a head tipped back
+    assert chin.clear(img, [short], mask, 1.0) is img, "a chin too short for its face"
+    assert chin.clear(img, [turned], mask, 1.0, force=True) is not img, "the parity check skips the question"
+
+
+def test_the_chin_amount_is_a_share_and_restore_keeps_the_beard():
+    img, pts, mask, band = chin_face()
+    bare = chin_face(0.0)[0]
+    where = band > 0.9
+    before = darkness(img, bare, where)
+    half = darkness(chin.clear(img, [pts], mask, 0.5), bare, where)
+    assert 0.3 * before < half < 0.7 * before, f"half of it: {half:.3f} of {before:.3f}"
+    assert np.array_equal(chin.clear(img, [pts], mask, 3.0), chin.clear(img, [pts], mask, 1.0)), "no more than all of it"
+    edit = np.full((400, 250), -1.0, np.float32)
+    out = chin.clear(img, [pts], mask, 1.0, (250, 600, edit))          # Restore over the photo's left half of the chin
+    left, right = where & (np.arange(1000)[None, :] < 480), where & (np.arange(1000)[None, :] > 520)
+    assert np.array_equal(out[left], img[left]), "kept where it was painted"
+    assert abs(darkness(out, bare, right)) < 0.3 * before, "and gone beside it"
+
+
+def test_the_chin_step_holds_at_other_sizes():
+    for size in (0.5, 2.0):
+        img, pts, mask, band = chin_face(size=size)
+        bare = chin_face(0.0, size=size)[0]
+        where = band > 0.9
+        before = darkness(img, bare, where)
+        after = darkness(chin.clear(img, [pts], mask, 1.0), bare, where)
+        assert abs(after) < 0.3 * before, f"at {size}x, left of the beard: {after:.3f} of {before:.3f}"
+        assert chin.clear(bare, [pts], mask, 1.0) is bare, f"at {size}x a bare chin is still bare"
+
+
+def test_the_chin_step_stays_out_without_a_jaw():
+    img, pts, mask, band = chin_face()
+    no_jaw = pts.copy()
+    no_jaw[list(chin.JAW)] = 0.0                                        # landmarks that have no jaw (the older method's)
+    assert not chin._Frame(no_jaw).ok
+    assert chin.clear(img, [no_jaw], mask, 1.0) is img and chin.clear(img, [no_jaw], mask, 1.0, force=True) is img
+
+
+def test_chin_helpers():
+    rows, cols = chin.TABLE.shape
+    u, v = np.meshgrid(np.arange(cols) * chin.TABLE_U, np.arange(rows) * chin.TABLE_V)
+    assert np.allclose(chin._table_at(u, v), chin.TABLE, atol=1e-6) and np.allclose(chin._table_at(-u, v), chin.TABLE, atol=1e-6)
+    assert np.allclose(chin._table_at(np.array([9.0]), np.array([-3.0])), chin.TABLE[0, -1]), "held at its edges"
+    assert float(chin.TABLE[10:12, 0].max()) < float(chin.TABLE[4:6, 0].min()) - 0.2, "the jaw's shadow is darker than the chin"
+    kernels = chin._line_kernels(6)
+    assert len(kernels) == 5 and all(k.shape == (7, 7) and int(k.sum()) == 7 and (k.sum(axis=1) == 1).all() for k in kernels), "one pixel a row"
+    dots = np.zeros((40, 40), np.uint8)
+    dots[10:12, 10:12] = 1                                              # a pore
+    dots[20:30, 25] = 1                                                 # a strand
+    kept = np.zeros_like(dots)
+    for k in kernels:
+        kept |= cv2.morphologyEx(dots, cv2.MORPH_OPEN, k)
+    assert kept[20:30, 25].all() and not kept[10:12, 10:12].any(), "a line stays, a dot goes"
+    spot = np.zeros((41, 41), np.float32)
+    spot[20, 20] = 1.0
+    along = chin._blur2(spot, 4.0, 0.0)
+    assert float(along[20].sum()) > 0.999 and float(np.abs(along[:20]).sum() + np.abs(along[21:]).sum()) == 0.0, "along its row only"
+    img, pts, mask, band = chin_face()
+    f = chin._Frame(pts)
+    assert f.posed and abs(f.tall - 0.5) < 0.01
+    us, vs = np.array([-1.2, -0.3, 0.0, 0.8, 1.4]), np.array([0.1, 0.6, 1.0, 1.3, 0.4])
+    back = f.uv(*f.at(us, vs))
+    assert np.allclose(back[0], us, atol=1e-6) and np.allclose(back[1], vs, atol=1e-6), "there and back"
+    x, y = f.at(np.array([0.0, 0.0]), np.array([0.0, 1.0]))
+    assert abs(x[0] - 500) < 1 and abs(y[0] - 650) < 1.5 and abs(y[1] - 740) < 1.5, "from the lip's edge to the jaw's"
+    data = np.zeros((40, 60, 3), np.float32)
+    data[20:] = 1.0                                                     # an edge along a row
+    known = np.ones((40, 60), np.float32)
+    known[:, 15:45] = 0.0                                               # not known in the middle
+    carried = chin._fill_in(data, known, 40.0)[:, :, 0]
+    assert carried[19, 30] < 0.02 and carried[20, 30] > 0.98, "carried in along the rows: the edge stays an edge"
 
 
 if __name__ == "__main__":

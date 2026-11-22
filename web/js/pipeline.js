@@ -15,6 +15,7 @@ import * as maskEdit from './mask_edit.js';
 import * as heal from './heal.js';
 import * as look from './look.js';
 import * as lip from './lip.js';
+import * as chin from './chin.js';
 
 const LIB = new URL('../lib/', import.meta.url).href;
 const MODELS = new URL('../models/', import.meta.url).href;
@@ -88,8 +89,9 @@ export async function analyze(bgr, { faceOnly = false, previous = null } = {}) {
 // params: { blemish: 0..1, strength: 0..1, texture: 0..1, pores: 0..1, shine: 0..1 (optional),
 // print: 'large' | 'small', lighting: 'soft' | 'hard', eyes: 0..1, tone: 0..1 and strays: 0..1
 // (optional, look.js's under-eyes, skin tone and stray hairs), lip: 0..1 (optional, lip.js's thin
-// moustache; lipFull takes a full one too; lipForce skips its questions), level: 0..1 (optional, straighten
-// the head; left out while wantMask is set), strokes (optional, the brush's) }.
+// moustache; lipFull takes a full one too; lipForce skips its questions), chin: true (optional, chin.js's
+// chin beard; chinForce skips its questions), level: 0..1 (optional, straighten the head; left out while
+// wantMask is set), strokes (optional, the brush's) }.
 // The parity tool passes grain and light (numbers) instead of print and lighting.
 // The analysis already holds the strokes' mask edits (withEdits); the heal and spot
 // strokes are painted here, after the spot fills and before smoothing, Smooth again
@@ -102,8 +104,11 @@ export function render(bgr, analysis, params) {
   const filled = lip.clear(cv, spotless, analysis.points, analysis.mask, params.lip ?? 0, analysis.restored ?? null,
     params.lipForce ?? false, params.lipFull ?? false);
   if (filled !== spotless) spotless.delete();
-  const healed = heal.apply(cv, filled, params.strokes);
-  if (healed !== filled) filled.delete();
+  // A beard on the chin, if that is asked for: after the moustache, so the two can go together.
+  const shaved = params.chin ? chin.clear(cv, filled, analysis.points, analysis.mask, 1.0, analysis.restored ?? null, params.chinForce ?? false) : filled;
+  if (shaved !== filled) filled.delete();
+  const healed = heal.apply(cv, shaved, params.strokes);
+  if (healed !== shaved) shaved.delete();
   const grain = params.grain ?? PRINT_GRAIN[params.print] ?? 1;
   const light = params.light ?? LIGHTING[params.lighting] ?? 1;
   let smoothed = smoothFace(cv, healed, params.strength, params.texture, analysis.mask, analysis.faces,
